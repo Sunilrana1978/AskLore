@@ -34,8 +34,8 @@
 - [x] Upload to `s3://asklore-raw/infra-runbooks/`
 
 ### Step 1.3 — S3 Event Trigger
-- [ ] Configure `s3:ObjectCreated:*` event notification on `asklore-raw`
-- [ ] Trigger target: `ChunkingLambda`
+- [x] Configure `s3:ObjectCreated:*` event notification on `asklore-raw`
+- [x] Trigger target: `ChunkingLambda`
 
 ### Step 1.4 — Chunking Lambda
 - [ ] Parse incoming file (markdown/PDF text extraction)
