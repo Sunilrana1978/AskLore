@@ -1,0 +1,8 @@
+[project]
+name = "asklore"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.uv]
+# Lambda build dependencies — installed into build/ dirs, not the venv
+# Run: uv run scripts/build-and-deploy.sh

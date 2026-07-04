@@ -154,7 +154,7 @@ Resources:
       Description: "Step 1.4: parse S3 object, chunk by heading, write chunks.json to asklore-processed"
       Runtime: python3.12
       Handler: handler.handler
-      Code: lambda/chunking
+      Code: build/chunking
       Role: !GetAtt IngestionLambdaRole.Arn
       Timeout: 300
       MemorySize: 512
@@ -169,7 +169,7 @@ Resources:
       Description: "Step 1.5: read chunks.json, call Bedrock Titan Embeddings, index into OpenSearch"
       Runtime: python3.12
       Handler: handler.handler
-      Code: lambda/embedding
+      Code: build/embedding
       Role: !GetAtt IngestionLambdaRole.Arn
       Timeout: 300
       MemorySize: 512
@@ -186,7 +186,7 @@ Resources:
       Description: "Step 1.6: embed query, kNN search OpenSearch top-5, generate answer via Bedrock Claude"
       Runtime: python3.12
       Handler: handler.handler
-      Code: lambda/retrieval
+      Code: build/retrieval
       Role: !GetAtt RetrievalLambdaRole.Arn
       Timeout: 30
       MemorySize: 256
