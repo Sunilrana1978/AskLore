@@ -64,7 +64,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
               # IAM-level AOSS access; data-level ops governed by AossAccessPolicy below.
               - Effect: Allow
                 Action:
@@ -94,7 +94,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-pro-v1:0"
               - Effect: Allow
                 Action:
@@ -141,7 +141,7 @@ Resources:
       Name: asklore-access
       Type: data
       Policy: !Sub >-
-        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${IngestionLambdaRole.Arn}","${RetrievalLambdaRole.Arn}"]}]
+        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${IngestionLambdaRole.Arn}","${RetrievalLambdaRole.Arn}","arn:aws:iam::${AWS::AccountId}:user/sunil-admin"]}]
 
   # ── Lambda Functions ────────────────────────────────────────────────────────
   # Code paths are local directories; `aws cloudformation package` ZIPs and
@@ -177,7 +177,7 @@ Resources:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v2:0
+          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v1
 
   RetrievalLambda:
     Type: AWS::Lambda::Function
@@ -194,7 +194,7 @@ Resources:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v2:0
+          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v1
           GENERATION_MODEL_ID: amazon.nova-pro-v1:0
 
   # ── Lambda Permissions ──────────────────────────────────────────────────────
