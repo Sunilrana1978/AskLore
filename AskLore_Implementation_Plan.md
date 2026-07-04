@@ -8,11 +8,11 @@
 
 ## 0. Prerequisites
 
-- [ ] AWS account with Bedrock model access enabled (Titan Embeddings, Claude, Rerank)
-- [ ] AWS CLI configured with sufficient IAM permissions (S3, Lambda, OpenSearch, Bedrock, DynamoDB, CloudFormation)
-- [ ] CDK or CloudFormation toolchain set up locally
-- [ ] Decide: CDK (TypeScript/Python) vs. raw CloudFormation YAML — recommend CDK for faster iteration
-- [ ] GitHub repo initialized for the project (`asklore`)
+- [x] AWS account with Bedrock model access enabled (Titan Embeddings, Claude, Rerank)
+- [x] AWS CLI configured with sufficient IAM permissions (S3, Lambda, OpenSearch, Bedrock, DynamoDB, CloudFormation)
+- [x] CloudFormation toolchain set up locally (raw YAML, not CDK)
+- [x] Decided: raw CloudFormation YAML (`template.yaml` at repo root)
+- [x] GitHub repo initialized for the project (`asklore`)
 
 ---
 
@@ -37,20 +37,24 @@
 - [x] Configure `s3:ObjectCreated:*` event notification on `asklore-raw`
 - [x] Trigger target: `ChunkingLambda`
 
-### Step 1.4 — Chunking Lambda
-- [ ] Parse incoming file (markdown/PDF text extraction)
-- [ ] Chunk by heading/section (not fixed character count)
-- [ ] Attach metadata: `{source_key, domain, doc_title, upload_date}`
-- [ ] Write chunked JSON to `asklore-processed`
+### Step 1.4 — Chunking Lambda ✅
+- [x] Parse incoming file (markdown/PDF text extraction)
+- [x] Chunk by heading/section (not fixed character count); MAX_CHUNK_CHARS=4000, MIN_CHUNK_CHARS=80
+- [x] Attach metadata: `{source_key, domain, doc_title, upload_date}`
+- [x] Write chunked JSON to `asklore-processed`
 
-### Step 1.5 — Embedding Pipeline
-- [ ] Lambda reads processed chunks
-- [ ] Call Bedrock Titan Embeddings per chunk
-- [ ] Index embedding + metadata into OpenSearch Serverless
+### Step 1.5 — Embedding Pipeline 🔄 (blocked on Bedrock model access)
+- [x] Lambda reads processed chunks from `asklore-processed`
+- [x] Call Bedrock Titan Embeddings per chunk (Titan v1, 1536-dim)
+- [x] Index embedding + metadata into OpenSearch Serverless (`asklore-knowledge` index)
+- [x] Idempotent indexing via `chunk_id` as OpenSearch document ID
+- [x] Exponential backoff retry in `embed()` for ThrottlingException
+- [x] `scripts/index-all.py` — local sequential indexer as fallback for Lambda concurrency limits
+- [ ] Verify all 18 runbooks successfully indexed (pending Bedrock model access grant)
 
 ### Step 1.6 — Basic Retrieval + Generation
 - [ ] Lambda: accept query → embed query → OpenSearch kNN search (top-5)
-- [ ] Pass retrieved chunks + query to Bedrock Claude with a grounded prompt
+- [ ] Pass retrieved chunks + query to Bedrock Nova Pro with a grounded prompt
 - [ ] Return answer + source `doc_title`/`source_key`
 
 ### Step 1.7 — Minimal API
