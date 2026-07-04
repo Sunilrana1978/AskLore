@@ -95,7 +95,7 @@ Resources:
                   - bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-pro-v1:0"
               - Effect: Allow
                 Action:
                   - aoss:APIAccessAll
@@ -195,7 +195,7 @@ Resources:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
           EMBEDDING_MODEL_ID: amazon.titan-embed-text-v2:0
-          GENERATION_MODEL_ID: anthropic.claude-3-5-sonnet-20241022-v2:0
+          GENERATION_MODEL_ID: amazon.nova-pro-v1:0
 
   # ── Lambda Permissions ──────────────────────────────────────────────────────
   # These must exist before the S3 buckets configure their notifications,

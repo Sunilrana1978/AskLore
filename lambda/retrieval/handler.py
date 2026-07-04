@@ -2,7 +2,7 @@
 Step 1.6 — RetrievalLambda
 Invoked by API Gateway POST /query.
 Embeds the query, runs kNN search on OpenSearch (top-5), passes retrieved
-chunks to Bedrock Claude with a grounded prompt, returns {answer, sources}.
+chunks to Amazon Nova Pro via Bedrock, returns {answer, sources}.
 
 Before deploying, add opensearch-py and requests-aws4auth to
 lambda/retrieval/requirements.txt and re-package.
@@ -50,22 +50,31 @@ def generate(query: str, chunks: list[dict]) -> str:
         f"[{i + 1}] {c.get('doc_title', 'Unknown')} ({c.get('source_key', '')})\n{c['text']}"
         for i, c in enumerate(chunks)
     )
+    # Amazon Nova request schema differs from Claude:
+    #   - system is a list of {text} objects
+    #   - message content is a list of {text} objects
+    #   - token limit key is max_new_tokens (not max_tokens)
     resp = bedrock.invoke_model(
         modelId=GENERATION_MODEL_ID,
         body=json.dumps({
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 1024,
-            "system": SYSTEM_PROMPT,
+            "system": [{"text": SYSTEM_PROMPT}],
             "messages": [
                 {
                     "role": "user",
-                    "content": f"Context:\n{context}\n\nQuestion: {query}",
+                    "content": [
+                        {"text": f"Context:\n{context}\n\nQuestion: {query}"}
+                    ],
                 }
             ],
+            "inferenceConfig": {
+                "max_new_tokens": 1024,
+                "temperature": 0.1,
+            },
         }),
     )
     body = json.loads(resp["body"].read())
-    return body["content"][0]["text"]
+    # Nova response path: output.message.content[0].text
+    return body["output"]["message"]["content"][0]["text"]
 
 
 def _resp(status: int, body: dict) -> dict:

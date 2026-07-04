@@ -12,9 +12,14 @@ __pycache__/
 dist/
 build/
 
-# Lambda build artifacts
+# Lambda build artifacts and installed dependencies
 lambda/**/package/
 lambda/**/*.zip
+lambda/**/*.dist-info/
+lambda/**/*.egg-info/
+lambda/**/bin/
+lambda/**/pypdf/
+lambda/**/pypdf_table_extraction/
 
 # Env
 .env
