@@ -29,9 +29,9 @@
 - [x] Deploy stack, verify resources in console
 
 ### Step 1.2 — Seed Data (Domain 1: Infra Runbooks)
-- [ ] Write/curate 20–30 realistic markdown documents (e.g., "How to rotate an SSL cert", "Restarting the payment service", "On-call escalation steps")
-- [ ] Store locally under `seed-data/infra-runbooks/`
-- [ ] Upload to `s3://asklore-raw/infra-runbooks/`
+- [x] Write/curate 20–30 realistic markdown documents (e.g., "How to rotate an SSL cert", "Restarting the payment service", "On-call escalation steps")
+- [x] Store locally under `seed-data/infra-runbooks/`
+- [x] Upload to `s3://asklore-raw/infra-runbooks/`
 
 ### Step 1.3 — S3 Event Trigger
 - [ ] Configure `s3:ObjectCreated:*` event notification on `asklore-raw`
