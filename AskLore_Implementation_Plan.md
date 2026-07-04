@@ -21,12 +21,12 @@
 **Goal:** Drop a markdown/PDF file into S3 → get a grounded, cited answer back.
 
 ### Step 1.1 — Core Infrastructure (IaC)
-- [ ] Create CloudFormation/CDK stack skeleton
-- [ ] Provision `asklore-raw` S3 bucket (versioning enabled)
-- [ ] Provision `asklore-processed` S3 bucket (for chunked/tagged output)
-- [ ] Provision OpenSearch Serverless collection (vector search type)
-- [ ] Create IAM roles: `IngestionLambdaRole`, `RetrievalLambdaRole`, `OpenSearchAccessRole`
-- [ ] Deploy stack, verify resources in console
+- [x] Create CloudFormation/CDK stack skeleton
+- [x] Provision `asklore-raw` S3 bucket (versioning enabled)
+- [x] Provision `asklore-processed` S3 bucket (for chunked/tagged output)
+- [x] Provision OpenSearch Serverless collection (vector search type)
+- [x] Create IAM roles: `IngestionLambdaRole`, `RetrievalLambdaRole`, `OpenSearchAccessRole`
+- [x] Deploy stack, verify resources in console
 
 ### Step 1.2 — Seed Data (Domain 1: Infra Runbooks)
 - [ ] Write/curate 20–30 realistic markdown documents (e.g., "How to rotate an SSL cert", "Restarting the payment service", "On-call escalation steps")
