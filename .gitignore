@@ -1,0 +1,21 @@
+# CDK
+cdk.out/
+.cdk.staging/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# Lambda build artifacts
+lambda/**/package/
+lambda/**/*.zip
+
+# Env
+.env
+.env.*

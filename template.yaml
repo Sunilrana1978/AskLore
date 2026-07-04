@@ -1,0 +1,346 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  AskLore Phase 1 — S3 ingestion pipeline (ChunkingLambda → EmbeddingLambda),
+  OpenSearch Serverless (VECTORSEARCH), RetrievalLambda, and API Gateway.
+
+# ── Deploy workflow ─────────────────────────────────────────────────────────────
+#
+#   1. Create an S3 bucket for CloudFormation artifacts (one-time):
+#        aws s3 mb s3://asklore-cfn-artifacts-<your-account>
+#
+#   2. Package (upload Lambda code, rewrite template):
+#        aws cloudformation package \
+#          --template-file template.yaml \
+#          --s3-bucket asklore-cfn-artifacts-<your-account> \
+#          --output-template-file template-packaged.yaml
+#
+#   3. Deploy:
+#        aws cloudformation deploy \
+#          --template-file template-packaged.yaml \
+#          --stack-name asklore-stack \
+#          --capabilities CAPABILITY_NAMED_IAM
+#
+#   4. View outputs (bucket names, collection endpoint, API URL):
+#        aws cloudformation describe-stacks \
+#          --stack-name asklore-stack \
+#          --query "Stacks[0].Outputs" --output table
+#
+# ────────────────────────────────────────────────────────────────────────────────
+
+Resources:
+
+  # ── IAM Roles ──────────────────────────────────────────────────────────────
+
+  IngestionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IngestionLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IngestionPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::asklore-processed-${AWS::AccountId}-${AWS::Region}/*"
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+              # IAM-level AOSS access; data-level ops governed by AossAccessPolicy below.
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource:
+                  - !Sub "arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*"
+
+  RetrievalLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: RetrievalLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RetrievalPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0"
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource:
+                  - !Sub "arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*"
+
+  # ── OpenSearch Serverless ───────────────────────────────────────────────────
+  # Encryption and network policies must exist before the collection is created.
+
+  AossEncryptionPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: asklore-encryption
+      Type: encryption
+      Policy: >-
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/asklore"]}],"AWSOwnedKey":true}
+
+  AossNetworkPolicy:
+    Type: AWS::OpenSearchServerless::SecurityPolicy
+    Properties:
+      Name: asklore-network
+      Type: network
+      # AllowFromPublic is acceptable for MVP; restrict to a VPC endpoint in Phase 6.
+      Policy: >-
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/asklore"]},{"ResourceType":"dashboard","Resource":["collection/asklore"]}],"AllowFromPublic":true}]
+
+  AossCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    DependsOn:
+      - AossEncryptionPolicy
+      - AossNetworkPolicy
+    Properties:
+      Name: asklore
+      Type: VECTORSEARCH
+
+  # Grants Lambda roles index read/write access at the data layer.
+  # The Principal ARNs are resolved via !Sub at deploy time.
+  AossAccessPolicy:
+    Type: AWS::OpenSearchServerless::AccessPolicy
+    DependsOn:
+      - AossCollection
+    Properties:
+      Name: asklore-access
+      Type: data
+      Policy: !Sub >-
+        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${IngestionLambdaRole.Arn}","${RetrievalLambdaRole.Arn}"]}]
+
+  # ── Lambda Functions ────────────────────────────────────────────────────────
+  # Code paths are local directories; `aws cloudformation package` ZIPs and
+  # uploads each one to S3 before deployment.
+
+  ChunkingLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: asklore-chunking
+      Description: "Step 1.4: parse S3 object, chunk by heading, write chunks.json to asklore-processed"
+      Runtime: python3.12
+      Handler: handler.handler
+      Code: lambda/chunking
+      Role: !GetAtt IngestionLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          PROCESSED_BUCKET: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
+
+  EmbeddingLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: asklore-embedding
+      Description: "Step 1.5: read chunks.json, call Bedrock Titan Embeddings, index into OpenSearch"
+      Runtime: python3.12
+      Handler: handler.handler
+      Code: lambda/embedding
+      Role: !GetAtt IngestionLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
+          INDEX_NAME: asklore-knowledge
+          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v2:0
+
+  RetrievalLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: asklore-retrieval
+      Description: "Step 1.6: embed query, kNN search OpenSearch top-5, generate answer via Bedrock Claude"
+      Runtime: python3.12
+      Handler: handler.handler
+      Code: lambda/retrieval
+      Role: !GetAtt RetrievalLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
+          INDEX_NAME: asklore-knowledge
+          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v2:0
+          GENERATION_MODEL_ID: anthropic.claude-3-5-sonnet-20241022-v2:0
+
+  # ── Lambda Permissions ──────────────────────────────────────────────────────
+  # These must exist before the S3 buckets configure their notifications,
+  # because S3 verifies it can invoke the Lambda during bucket creation.
+
+  ChunkingLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt ChunkingLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
+
+  EmbeddingLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt EmbeddingLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::asklore-processed-${AWS::AccountId}-${AWS::Region}"
+
+  RetrievalApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt RetrievalLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AskLoreApi}/*/POST/query"
+
+  # ── S3 Buckets ──────────────────────────────────────────────────────────────
+  # Buckets are created after Lambda Permissions so S3 can verify invocation
+  # rights when registering the notification configuration.
+
+  RawBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - ChunkingLambdaPermission
+    Properties:
+      BucketName: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt ChunkingLambda.Arn
+
+  ProcessedBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - EmbeddingLambdaPermission
+    Properties:
+      BucketName: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt EmbeddingLambda.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: suffix
+                    Value: chunks.json
+
+  EvalBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "asklore-eval-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # ── API Gateway (Step 1.7) ──────────────────────────────────────────────────
+
+  AskLoreApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: asklore-api
+      Description: AskLore internal knowledge query API
+
+  QueryResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AskLoreApi
+      ParentId: !GetAtt AskLoreApi.RootResourceId
+      PathPart: query
+
+  QueryMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AskLoreApi
+      ResourceId: !Ref QueryResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations"
+          - LambdaArn: !GetAtt RetrievalLambda.Arn
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - QueryMethod
+    Properties:
+      RestApiId: !Ref AskLoreApi
+      Description: Phase 1 initial deployment
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref AskLoreApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: v1
+
+# ── Outputs ─────────────────────────────────────────────────────────────────────
+
+Outputs:
+  RawBucketName:
+    Description: "Drop source documents here — prefix becomes the domain"
+    Value: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+
+  ProcessedBucketName:
+    Description: "Chunked JSON output: <domain>/<doc_id>/chunks.json"
+    Value: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
+
+  EvalBucketName:
+    Description: "Golden Q&A dataset (Phase 5)"
+    Value: !Sub "asklore-eval-${AWS::AccountId}-${AWS::Region}"
+
+  CollectionEndpoint:
+    Description: "OpenSearch Serverless HTTPS endpoint"
+    Value: !GetAtt AossCollection.CollectionEndpoint
+
+  ApiUrl:
+    Description: 'POST /query — body: {"query": "..."}'
+    Value: !Sub "https://${AskLoreApi}.execute-api.${AWS::Region}.amazonaws.com/v1/query"
