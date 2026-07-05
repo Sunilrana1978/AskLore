@@ -64,7 +64,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
               # IAM-level AOSS access; data-level ops governed by AossAccessPolicy below.
               - Effect: Allow
                 Action:
@@ -94,8 +94,9 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.nova-pro-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0"
+                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0"
               - Effect: Allow
                 Action:
                   - aoss:APIAccessAll
@@ -166,18 +167,26 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: asklore-embedding
-      Description: "Step 1.5: read chunks.json, call Bedrock Titan Embeddings, index into OpenSearch"
+      Description: "Step 1.5: read chunks.json, call Bedrock Cohere Embed v3, index into OpenSearch"
       Runtime: python3.12
       Handler: handler.handler
       Code: build/embedding
       Role: !GetAtt IngestionLambdaRole.Arn
-      Timeout: 300
+      Timeout: 900
       MemorySize: 512
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v1
+          EMBEDDING_MODEL_ID: cohere.embed-english-v3
+
+  EmbeddingLambdaInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref EmbeddingLambda
+      Qualifier: $LATEST
+      # No auto-retries — a timeout means Bedrock is throttled; retrying immediately makes it worse.
+      MaximumRetryAttempts: 0
 
   RetrievalLambda:
     Type: AWS::Lambda::Function
@@ -194,8 +203,8 @@ Resources:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: amazon.titan-embed-text-v1
-          GENERATION_MODEL_ID: amazon.nova-pro-v1:0
+          EMBEDDING_MODEL_ID: cohere.embed-english-v3
+          GENERATION_MODEL_ID: us.amazon.nova-pro-v1:0
 
   # ── Lambda Permissions ──────────────────────────────────────────────────────
   # These must exist before the S3 buckets configure their notifications,

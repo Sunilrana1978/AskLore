@@ -1,14 +1,12 @@
 """
 Step 1.5 — EmbeddingLambda
 Triggered by s3:ObjectCreated (suffix=chunks.json) on asklore-processed.
-For each chunk: calls Bedrock Titan Embeddings v2 to produce a 1024-dim
-vector, then indexes vector + metadata into OpenSearch Serverless via
-the opensearch-py client with AWS Signature V4 auth.
+For each chunk: calls Bedrock Cohere Embed English v3 (1024-dim),
+then indexes vector + metadata into OpenSearch Serverless.
 """
 
 import json
 import os
-import random
 import time
 from urllib.parse import unquote_plus
 
@@ -23,9 +21,8 @@ bedrock = boto3.client("bedrock-runtime")
 OPENSEARCH_ENDPOINT = os.environ["OPENSEARCH_ENDPOINT"]
 INDEX_NAME = os.environ["INDEX_NAME"]
 EMBEDDING_MODEL_ID = os.environ["EMBEDDING_MODEL_ID"]
-VECTOR_DIM = 1536  # Titan Embeddings v1 fixed output dimension
+VECTOR_DIM = 1024  # Cohere Embed English v3 output dimension
 
-# Module-level client cache — reused across warm Lambda invocations.
 _os_client: OpenSearch | None = None
 
 
@@ -37,16 +34,14 @@ def get_os_client() -> OpenSearch:
         return _os_client
 
     region = os.environ.get("AWS_REGION", "us-west-2")
-    # get_frozen_credentials() returns a stable snapshot valid for this invocation.
     creds = boto3.session.Session().get_credentials().get_frozen_credentials()
     auth = AWS4Auth(
         creds.access_key,
         creds.secret_key,
         region,
-        "aoss",                  # service name for OpenSearch Serverless
+        "aoss",
         session_token=creds.token,
     )
-
     host = OPENSEARCH_ENDPOINT.replace("https://", "").rstrip("/")
     _os_client = OpenSearch(
         hosts=[{"host": host, "port": 443}],
@@ -67,7 +62,7 @@ def ensure_index(client: OpenSearch) -> None:
         if client.indices.exists(index=INDEX_NAME):
             return
     except Exception:
-        pass  # treat any check failure as "not found"
+        pass
 
     body = {
         "settings": {"index.knn": True},
@@ -83,10 +78,8 @@ def ensure_index(client: OpenSearch) -> None:
                         "parameters": {"ef_construction": 512, "m": 16},
                     },
                 },
-                # Full-text fields for future hybrid (BM25) search in Phase 3
                 "text": {"type": "text"},
                 "section_title": {"type": "text"},
-                # Keyword fields for metadata filtering
                 "chunk_id": {"type": "keyword"},
                 "source_key": {"type": "keyword"},
                 "domain": {"type": "keyword"},
@@ -99,7 +92,6 @@ def ensure_index(client: OpenSearch) -> None:
         client.indices.create(index=INDEX_NAME, body=body)
         print(f"[OK] Created index '{INDEX_NAME}'")
     except RequestError as exc:
-        # Concurrent Lambda invocations may race to create the index — safe to ignore.
         if "resource_already_exists_exception" in str(exc).lower():
             print(f"[INFO] Index '{INDEX_NAME}' already exists (race condition — OK)")
         else:
@@ -109,21 +101,15 @@ def ensure_index(client: OpenSearch) -> None:
 # ── Embedding ─────────────────────────────────────────────────────────────────
 
 def embed(text: str) -> list[float]:
-    """Call Titan Embeddings with explicit exponential backoff for ThrottlingException."""
-    body = json.dumps({"inputText": text[:8192]})
-    delay = 5.0
-    for attempt in range(8):
-        try:
-            resp = bedrock.invoke_model(modelId=EMBEDDING_MODEL_ID, body=body)
-            return json.loads(resp["body"].read())["embedding"]
-        except bedrock.exceptions.ThrottlingException:
-            if attempt == 7:
-                raise
-            jitter = random.uniform(0, delay * 0.5)
-            wait = delay + jitter
-            print(f"[THROTTLED] attempt {attempt + 1}/8, sleeping {wait:.1f}s")
-            time.sleep(wait)
-            delay = min(delay * 2, 60.0)
+    """Cohere Embed English v3 — input_type=search_document for indexing."""
+    resp = bedrock.invoke_model(
+        modelId=EMBEDDING_MODEL_ID,
+        body=json.dumps({
+            "texts": [text[:2048]],
+            "input_type": "search_document",
+        }),
+    )
+    return json.loads(resp["body"].read())["embeddings"][0]
 
 
 # ── Handler ───────────────────────────────────────────────────────────────────
@@ -140,27 +126,29 @@ def handler(event, context):
         chunks: list[dict] = json.loads(obj["Body"].read())
         print(f"Embedding {len(chunks)} chunks from {key}")
 
-        indexed = 0
+        # Embed all chunks then bulk-index in one request.
+        # AOSS does not allow explicit IDs in single-document index calls,
+        # but the _bulk API supports them for idempotent upserts.
+        # AOSS does not support explicit document IDs; let it auto-generate.
+        # Idempotent upsert by chunk_id is deferred to Phase 2 dedup logic.
+        bulk_body = []
         for chunk in chunks:
             vector = embed(chunk["text"])
-            time.sleep(1.0)  # pace concurrent Lambdas against Bedrock TPS quota
+            bulk_body.append({"index": {"_index": INDEX_NAME}})
+            bulk_body.append({
+                "vector": vector,
+                "text": chunk["text"],
+                "chunk_id": chunk["chunk_id"],
+                "source_key": chunk["source_key"],
+                "domain": chunk["domain"],
+                "doc_title": chunk["doc_title"],
+                "section_title": chunk.get("section_title", ""),
+                "upload_date": chunk.get("upload_date", ""),
+            })
 
-            client.index(
-                index=INDEX_NAME,
-                # Use chunk_id as the document ID so re-indexing the same
-                # document is idempotent (overwrites rather than duplicates).
-                id=chunk["chunk_id"],
-                body={
-                    "vector": vector,
-                    "text": chunk["text"],
-                    "chunk_id": chunk["chunk_id"],
-                    "source_key": chunk["source_key"],
-                    "domain": chunk["domain"],
-                    "doc_title": chunk["doc_title"],
-                    "section_title": chunk.get("section_title", ""),
-                    "upload_date": chunk.get("upload_date", ""),
-                },
-            )
-            indexed += 1
-
+        resp = client.bulk(body=bulk_body)
+        errors = [item for item in resp.get("items", []) if "error" in item.get("index", {})]
+        if errors:
+            print(f"[WARN] {len(errors)} bulk index errors: {errors[:2]}")
+        indexed = len(bulk_body) // 2 - len(errors)
         print(f"[OK] {key} → {indexed} chunks indexed into '{INDEX_NAME}'")

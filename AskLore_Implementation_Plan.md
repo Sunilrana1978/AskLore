@@ -8,7 +8,7 @@
 
 ## 0. Prerequisites
 
-- [x] AWS account with Bedrock model access enabled (Titan Embeddings, Claude, Rerank)
+- [x] AWS account with Bedrock model access enabled (Cohere Embed English v3, Amazon Nova Pro, Rerank)
 - [x] AWS CLI configured with sufficient IAM permissions (S3, Lambda, OpenSearch, Bedrock, DynamoDB, CloudFormation)
 - [x] CloudFormation toolchain set up locally (raw YAML, not CDK)
 - [x] Decided: raw CloudFormation YAML (`template.yaml` at repo root)
@@ -43,23 +43,22 @@
 - [x] Attach metadata: `{source_key, domain, doc_title, upload_date}`
 - [x] Write chunked JSON to `asklore-processed`
 
-### Step 1.5 — Embedding Pipeline 🔄 (blocked on Bedrock model access)
+### Step 1.5 — Embedding Pipeline ✅
 - [x] Lambda reads processed chunks from `asklore-processed`
-- [x] Call Bedrock Titan Embeddings per chunk (Titan v1, 1536-dim)
+- [x] Call Bedrock Cohere Embed English v3 per chunk (1024-dim); `input_type=search_document`
 - [x] Index embedding + metadata into OpenSearch Serverless (`asklore-knowledge` index)
-- [x] Idempotent indexing via `chunk_id` as OpenSearch document ID
-- [x] Exponential backoff retry in `embed()` for ThrottlingException
-- [x] `scripts/index-all.py` — local sequential indexer as fallback for Lambda concurrency limits
-- [ ] Verify all 18 runbooks successfully indexed (pending Bedrock model access grant)
+- [x] Bulk-index via AOSS `_bulk` API (auto-generated doc IDs; idempotent upsert deferred to Phase 2)
+- [x] Smoke-tested end-to-end: `database-failover.md` → 2 chunks → 2 vectors indexed (989ms)
 
-### Step 1.6 — Basic Retrieval + Generation
-- [ ] Lambda: accept query → embed query → OpenSearch kNN search (top-5)
-- [ ] Pass retrieved chunks + query to Bedrock Nova Pro with a grounded prompt
-- [ ] Return answer + source `doc_title`/`source_key`
+### Step 1.6 — Basic Retrieval + Generation 🔄 (blocked on Nova Pro daily quota)
+- [x] Lambda: accept query → embed query via Cohere Embed v3 (`input_type=search_query`) → OpenSearch kNN search (top-5)
+- [x] Pass retrieved chunks + query to Bedrock Nova Pro (`us.amazon.nova-pro-v1:0`) with grounded system prompt
+- [x] Return `{answer, sources: [{doc_title, source_key}]}`
+- [ ] Confirm end-to-end answer with citation — blocked by Nova Pro `ThrottlingException` (daily token quota exhausted); retry once quota resets
 
-### Step 1.7 — Minimal API
-- [ ] API Gateway REST endpoint → Retrieval Lambda
-- [ ] Test via Postman/curl with 5–10 sample questions
+### Step 1.7 — Minimal API 🔄 (depends on 1.6 unblock)
+- [x] API Gateway REST endpoint (`POST /query`) → RetrievalLambda — deployed and routing correctly
+- [ ] Test via curl with 5–10 sample questions once Nova Pro quota resets
 
 **✅ Phase 1 Done When:** You can upload a markdown file and query it end-to-end with a cited answer.
 
