@@ -4,24 +4,46 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 
 ---
 
-## How it works
+## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Ingestion["Document Ingestion"]
+        direction LR
+        A([markdown / PDF]) -->|s3 cp| B[(S3\nasklore-raw)]
+        B -->|S3 Event| C[ChunkingLambda]
+        C -->|chunks.json| D[(S3\nasklore-processed)]
+        D -->|S3 Event| E[EmbeddingLambda]
+        E <-->|1024-dim vectors| F([Bedrock\nCohere Embed v3])
+        E -->|bulk index| G[(OpenSearch Serverless\nasklore-knowledge)]
+    end
+
+    subgraph Query["Query Pipeline"]
+        direction LR
+        H([Client]) -->|POST /query| I[API Gateway]
+        I --> J[RetrievalLambda]
+        J <-->|embed query| K([Bedrock\nCohere Embed v3])
+        J -->|kNN top-5| G
+        G -->|chunks| J
+        J <-->|documents + citations| L([Bedrock\nCohere Command R+])
+        J -->|answer + sources| I
+        I --> H
+    end
 ```
-S3 upload (asklore-raw)
-  └─► ChunkingLambda       — parse markdown/PDF, split by heading, write chunks.json
-        └─► EmbeddingLambda — Bedrock Titan Embeddings v1 (1536-dim), index into OpenSearch Serverless
-              └─► RetrievalLambda ◄─ POST /query (API Gateway)
-                    ├─ embed query → kNN search (top-5 chunks)
-                    └─ Bedrock Amazon Nova Pro → grounded answer + source citations
-```
+
+**Ingestion flow:** S3 upload → `ChunkingLambda` (splits by heading, writes `chunks.json`) → `EmbeddingLambda` (Cohere Embed v3, 1024-dim, bulk-indexes into OpenSearch Serverless).
+
+**Query flow:** `POST /query` → `RetrievalLambda` embeds the query with Cohere Embed v3, runs kNN search (top-5 chunks), passes chunks as grounded documents to Cohere Command R+, returns answer with only the actually-cited sources.
+
+---
 
 ## AWS Services
 
 | Role | Service |
 |---|---|
 | Document storage + event trigger | S3 + S3 Event Notifications |
-| Embeddings | Bedrock Titan Text Embeddings V1 (`amazon.titan-embed-text-v1`) |
-| Generation | Bedrock Amazon Nova Pro (`amazon.nova-pro-v1:0`) |
+| Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
+| Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) |
 | Vector search | OpenSearch Serverless — VECTORSEARCH collection `asklore` |
 | Compute | Lambda (Python 3.12) |
 | API | API Gateway REST — `POST /query` |
@@ -36,10 +58,11 @@ lambda/
     handler.py                  # S3 event → parse markdown/PDF → chunks.json
     requirements.txt
   embedding/
-    handler.py                  # chunks.json → Titan embeddings → OpenSearch index
+    handler.py                  # chunks.json → Cohere Embed v3 → OpenSearch bulk index
     requirements.txt
   retrieval/
-    handler.py                  # query → kNN search → Nova Pro → cited answer
+    handler.py                  # query → kNN search → Command R+ → cited answer
+    requirements.txt
 scripts/
   build-and-deploy.sh           # build Lambda packages with uv, package, deploy
   index-all.py                  # one-shot local indexer (bypasses Lambda concurrency)
@@ -64,7 +87,7 @@ uv pip install boto3 opensearch-py requests-aws4auth requests
 
 ## Deploy
 
-**Prerequisites:** Bedrock model access enabled for **Titan Text Embeddings V1** and **Amazon Nova Pro** (Bedrock console → Model access → Modify model access).
+**Prerequisites:** Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access).
 
 ```bash
 # One-time: create an S3 bucket for CloudFormation artifacts
@@ -129,6 +152,8 @@ Response:
   ]
 }
 ```
+
+Command R+ returns `citations[]` that reference the exact documents used — `sources` in the response contains only chunks the model actually cited, not all retrieved candidates.
 
 ## Implementation phases
 
