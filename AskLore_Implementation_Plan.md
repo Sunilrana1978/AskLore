@@ -205,7 +205,7 @@
 | Document storage/trigger | S3 + S3 Event Notifications |
 | Orchestration/agents | Bedrock AgentCore |
 | Vector + hybrid search | OpenSearch Serverless |
-| Embeddings & generation | Bedrock (Titan Embeddings, Claude) |
+| Embeddings & generation | Bedrock (Cohere Embed English v3, Amazon Nova Pro) |
 | Chunking/processing compute | Lambda (light) / Fargate (large PDFs) |
 | Change detection | S3 versioning + hash comparison (Lambda + DynamoDB) |
 | Metadata/cache/trace store | DynamoDB |
@@ -238,4 +238,4 @@ s3://asklore-eval/
 
 ## Suggested Next Action
 
-Start with **Phase 1, Step 1.1** — scaffold the CloudFormation/CDK stack and get the S3 buckets + OpenSearch Serverless collection provisioned before writing any Lambda code.
+Once the Nova Pro daily token quota resets, run the end-to-end curl test against the API to close out Steps 1.6 and 1.7, then move on to **Phase 2, Step 2.1** — seed content for the remaining three domains.
