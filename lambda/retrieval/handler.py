@@ -2,7 +2,9 @@
 Step 1.6 — RetrievalLambda
 Invoked by API Gateway POST /query.
 Embeds the query, runs kNN search on OpenSearch Serverless (top-5),
-passes retrieved chunks to Amazon Nova Pro via Bedrock, returns {answer, sources}.
+passes retrieved chunks to Cohere Command R+ via Bedrock, returns {answer, sources}.
+Command R+ accepts a documents[] array and returns citations[] that map directly
+back to those documents — sources in the response are only actually-cited docs.
 """
 
 import json
@@ -19,11 +21,11 @@ INDEX_NAME = os.environ["INDEX_NAME"]
 EMBEDDING_MODEL_ID = os.environ["EMBEDDING_MODEL_ID"]
 GENERATION_MODEL_ID = os.environ["GENERATION_MODEL_ID"]
 
-SYSTEM_PROMPT = (
+PREAMBLE = (
     "You are AskLore, an internal knowledge assistant. "
-    "Answer ONLY using the provided context. "
-    "If the context is insufficient, say so explicitly. "
-    "Cite the source document(s) you used in your answer."
+    "Answer ONLY using the provided documents. "
+    "If the documents are insufficient, say so explicitly. "
+    "Always cite the documents you used."
 )
 
 _os_client: OpenSearch | None = None
@@ -92,35 +94,30 @@ def knn_search(vector: list[float], top_k: int = 5) -> list[dict]:
     return [hit["_source"] for hit in hits]
 
 
-def generate(query: str, chunks: list[dict]) -> str:
-    context = "\n\n".join(
-        f"[{i + 1}] {c.get('doc_title', 'Unknown')} ({c.get('source_key', '')})\n{c['text']}"
-        for i, c in enumerate(chunks)
-    )
-    # Amazon Nova request schema:
-    #   system is a list of {text} objects
-    #   message content is a list of {text} objects
-    #   token limit key is max_new_tokens
+def generate(query: str, chunks: list[dict]) -> tuple[str, list[int]]:
+    """Call Command R+ with grounded documents; return (answer, cited_chunk_indices)."""
+    documents = [
+        {"title": c.get("doc_title", "Unknown"), "snippet": c["text"]}
+        for c in chunks
+    ]
     resp = bedrock.invoke_model(
         modelId=GENERATION_MODEL_ID,
         body=json.dumps({
-            "system": [{"text": SYSTEM_PROMPT}],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"text": f"Context:\n{context}\n\nQuestion: {query}"}
-                    ],
-                }
-            ],
-            "inferenceConfig": {
-                "max_new_tokens": 1024,
-                "temperature": 0.1,
-            },
+            "message": query,
+            "preamble": PREAMBLE,
+            "documents": documents,
+            "max_tokens": 1024,
+            "temperature": 0.1,
         }),
     )
     body = json.loads(resp["body"].read())
-    return body["output"]["message"]["content"][0]["text"]
+    # citations[].document_ids are strings like "doc_0", "doc_1", …
+    cited = {
+        int(doc_id.split("_")[1])
+        for citation in body.get("citations", [])
+        for doc_id in citation.get("document_ids", [])
+    }
+    return body["text"], sorted(cited)
 
 
 def _resp(status: int, body: dict) -> dict:
@@ -142,10 +139,10 @@ def handler(event, context):
         chunks = knn_search(vector)
         if not chunks:
             return _resp(200, {"answer": "No relevant documents found for your query.", "sources": []})
-        answer = generate(query, chunks)
+        answer, cited_indices = generate(query, chunks)
         sources = [
-            {"doc_title": c.get("doc_title"), "source_key": c.get("source_key")}
-            for c in chunks
+            {"doc_title": chunks[i].get("doc_title"), "source_key": chunks[i].get("source_key")}
+            for i in cited_indices if i < len(chunks)
         ]
         return _resp(200, {"answer": answer, "sources": sources})
     except Exception as exc:

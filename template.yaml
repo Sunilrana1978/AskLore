@@ -95,8 +95,7 @@ Resources:
                   - bedrock:InvokeModel
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-pro-v1:0"
-                  - "arn:aws:bedrock:*::foundation-model/amazon.nova-pro-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
               - Effect: Allow
                 Action:
                   - aoss:APIAccessAll
@@ -204,7 +203,7 @@ Resources:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
           INDEX_NAME: asklore-knowledge
           EMBEDDING_MODEL_ID: cohere.embed-english-v3
-          GENERATION_MODEL_ID: us.amazon.nova-pro-v1:0
+          GENERATION_MODEL_ID: cohere.command-r-plus-v1:0
 
   # ── Lambda Permissions ──────────────────────────────────────────────────────
   # These must exist before the S3 buckets configure their notifications,
