@@ -55,6 +55,8 @@ flowchart TB
     CE1 ==>|bulk index| VS
 ```
 
+![AskLore RAG Architecture](docs/architecture-overview.png)
+
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
 
 **Query flow:** `POST /query` → `RetrievalLambda` embeds the question with Cohere Embed v3 (`search_query`), runs a kNN top-5 search, injects the retrieved chunks into a grounded prompt, calls Cohere Command R+, and returns only the chunks actually referenced in `citations[]` as `sources`.
