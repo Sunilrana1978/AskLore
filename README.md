@@ -17,7 +17,7 @@ flowchart TB
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
     subgraph ING["📥 Ingestion"]
-        direction LR
+        direction TB
         DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
     end
 
