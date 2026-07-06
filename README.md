@@ -8,7 +8,7 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
-flowchart LR
+flowchart TB
 
     classDef s3      fill:#FF9900,stroke:#cc7a00,color:#000,font-weight:bold
     classDef lambda  fill:#E65100,stroke:#bf360c,color:#fff,font-weight:bold
@@ -16,28 +16,34 @@ flowchart LR
     classDef os      fill:#005EB8,stroke:#003f8a,color:#fff,font-weight:bold
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
-    subgraph ING["📥 Ingestion"]
-        direction TB
-        RAW(["S3 asklore-raw"]):::s3
-        CL["ChunkingLambda"]:::lambda
-        PROC(["S3 asklore-processed"]):::s3
-        EL["EmbeddingLambda"]:::lambda
-        CE1(["Cohere Embed v3"]):::bedrock
-        RAW -->|S3 Event| CL --> |chunks.json| PROC -->|S3 Event| EL --> CE1
-    end
-
-    subgraph QRY["🔍 Query Pipeline"]
-        direction TB
+    subgraph QRY["🔍 Text Generation Workflow"]
+        direction LR
         USR(["👤 User"]):::ext
         GW["API Gateway"]:::lambda
         RL["RetrievalLambda"]:::lambda
         CE2(["Cohere Embed v3"]):::bedrock
-        VS[("OpenSearch Serverless")]:::os
+        CTX["Context"]:::ext
+        PA["Prompt Augmentation"]:::ext
         LLM(["Cohere Command R+"]):::bedrock
-        OUT(["Response"]):::ext
-        USR -->|POST /query| GW --> RL --> CE2 -->|kNN top-5| VS -->|top-5 chunks| LLM --> OUT
+        RESP(["Response"]):::ext
+        USR --> GW --> RL --> CE2
+        CTX --> PA --> LLM --> RESP
     end
 
+    VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
+
+    subgraph ING["📥 Data Ingestion Workflow"]
+        direction LR
+        DS(["S3 asklore-raw"]):::s3
+        CL["ChunkingLambda"]:::lambda
+        PROC(["S3 asklore-processed"]):::s3
+        EL["EmbeddingLambda"]:::lambda
+        CE1(["Cohere Embed v3"]):::bedrock
+        DS -->|S3 Event| CL -->|chunks.json| PROC -->|S3 Event| EL --> CE1
+    end
+
+    CE2 -->|kNN search| VS
+    VS -->|top-5 chunks| CTX
     CE1 -->|bulk index| VS
 ```
 
