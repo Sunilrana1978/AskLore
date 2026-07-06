@@ -16,41 +16,29 @@ flowchart LR
     classDef os      fill:#005EB8,stroke:#003f8a,color:#fff,font-weight:bold
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
-    subgraph ING["📥  Ingestion Pipeline"]
+    subgraph ING["📥 Ingestion"]
         direction TB
-        RAW(["S3 · asklore-raw\n.md / .pdf"]):::s3
-        CL["ChunkingLambda\nheading split · metadata"]:::lambda
-        PROC(["S3 · asklore-processed"]):::s3
+        RAW(["S3 asklore-raw"]):::s3
+        CL["ChunkingLambda"]:::lambda
+        PROC(["S3 asklore-processed"]):::s3
         EL["EmbeddingLambda"]:::lambda
-        CE1(["Cohere Embed v3\nsearch_document · 1024-dim"]):::bedrock
-
-        RAW -->|S3 Event| CL
-        CL -->|chunks.json| PROC
-        PROC -->|S3 Event| EL
-        EL --> CE1
+        CE1(["Cohere Embed v3"]):::bedrock
+        RAW -->|S3 Event| CL --> |chunks.json| PROC -->|S3 Event| EL --> CE1
     end
 
-    subgraph QRY["🔍  Query Pipeline"]
+    subgraph QRY["🔍 Query Pipeline"]
         direction TB
         USR(["👤 User"]):::ext
         GW["API Gateway"]:::lambda
         RL["RetrievalLambda"]:::lambda
-        CE2(["Cohere Embed v3\nsearch_query · 1024-dim"]):::bedrock
-        VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
-        PA["Prompt Augmentation\npreamble + top-5 chunks"]:::ext
+        CE2(["Cohere Embed v3"]):::bedrock
+        VS[("OpenSearch Serverless")]:::os
         LLM(["Cohere Command R+"]):::bedrock
-        OUT(["Response\n{ answer, sources }"]):::ext
-
-        USR -->|POST /query| GW
-        GW --> RL
-        RL -->|query| CE2
-        CE2 -->|kNN top-5| VS
-        VS -->|retrieved chunks| PA
-        PA -->|documents| LLM
-        LLM -->|answer + citations| OUT
+        OUT(["Response"]):::ext
+        USR -->|POST /query| GW --> RL --> CE2 -->|kNN top-5| VS -->|top-5 chunks| LLM --> OUT
     end
 
-    CE1 -->|"bulk index · 1024-dim"| VS
+    CE1 -->|bulk index| VS
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
