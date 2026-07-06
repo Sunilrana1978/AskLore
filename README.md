@@ -22,6 +22,7 @@ graph LR
     end
 
     subgraph USQ["🔍 User Query"]
+        USR(["👤 User"])
         SRCH["① 🔍 POST /query"]
         PLAY["② ▶️ API Gateway"]:::lambda
         GEAR["③ ⚙️ RetrievalLambda"]:::lambda
@@ -38,7 +39,7 @@ graph LR
 
     RAW  -->|S3 Event| CHUNK --> PROC
     PROC -->|S3 Event| EMBED --> VECTOR
-    SRCH --> PLAY --> GEAR --> RESDOC --> VECTOR
+    USR --> SRCH --> PLAY --> GEAR --> RESDOC --> VECTOR
     CLOUD -.-> EMBED
     CLOUD -.-> VECTOR
     VECTOR --> LLM --> FINAL
