@@ -7,55 +7,36 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'dark', 'themeVariables': {'fontSize': '15px', 'fontFamily': 'arial'}}}%%
+%%{init: {'theme': 'dark'}}%%
 flowchart TB
 
     classDef s3      fill:#FF9900,stroke:#cc7a00,color:#000,font-weight:bold
     classDef lambda  fill:#E65100,stroke:#bf360c,color:#fff,font-weight:bold
     classDef bedrock fill:#01A88D,stroke:#007a67,color:#fff,font-weight:bold
     classDef os      fill:#005EB8,stroke:#003f8a,color:#fff,font-weight:bold
-    classDef ext     fill:#37474F,stroke:#546E7A,color:#fff
-    classDef vec     fill:#1A237E,stroke:#283593,color:#fff,font-style:italic
+    classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
-    subgraph ING["📥   Data Ingestion Workflow"]
+    subgraph ING["📥  Ingestion Pipeline"]
         direction LR
-        RAW(["☁️  S3  ·  asklore-raw\n.md  /  .pdf"]):::s3
-        CL["⚡  ChunkingLambda\nSplit by H1/H2/H3 heading boundaries\nMin 80 chars  ·  Max 4 000 chars per chunk\nMetadata: domain · doc_title · upload_date"]:::lambda
-        PROC(["☁️  S3  ·  asklore-processed\ndomain / doc-id / chunks.json"]):::s3
-        EL["⚡  EmbeddingLambda\ninput_type: search_document\nBulk-index via AOSS _bulk API"]:::lambda
-        IE(["🧠  Bedrock\nCohere Embed v3\n1 024-dim float vectors"]):::bedrock
-
-        RAW -->|"s3:ObjectCreated"| CL
-        CL -->|"chunks.json + metadata"| PROC
-        PROC -->|"s3:ObjectCreated"| EL
-        EL -->|"texts[ ]"| IE
+        RAW(["S3 · asklore-raw\n.md / .pdf"]):::s3 -->|S3 Event| CL["ChunkingLambda\nheading split · metadata"]:::lambda
+        CL -->|chunks.json| PROC(["S3 · asklore-processed"]):::s3
+        PROC -->|S3 Event| EL["EmbeddingLambda"]:::lambda
+        EL -->|search_document| CE1(["Cohere Embed v3\n1024-dim"]):::bedrock
     end
 
-    VS[("🔎  OpenSearch Serverless\nasklore-knowledge\nHNSW  ·  cosine similarity  ·  1 024-dim")]:::os
-
-    subgraph QRY["🔍   Query Pipeline  —  Text Generation Workflow"]
+    subgraph QRY["🔍  Query Pipeline  —  Text Generation Workflow"]
         direction LR
-        USR(["👤  User"]):::ext
-        GW["🌐  API Gateway\nPOST  /query"]:::lambda
-        RL["⚡  RetrievalLambda\nEmbed  →  Search  →  Augment  →  Generate"]:::lambda
-        QE(["🧠  Bedrock\nCohere Embed v3\ninput_type: search_query  ·  1 024-dim"]):::bedrock
-        VEC(["Query Vector\n[ 0.89  ·  −0.02  ·  0.55  ·  0.17  ···  −0.38 ]"]):::vec
-        PA["📝  Prompt Augmentation\nPreamble  +  top-5 retrieved chunks\npassed as  documents[ ]  to Command R+"]:::ext
-        LLM(["🧠  Bedrock\nCohere Command R+\nGrounded generation  ·  citations[ ]"]):::bedrock
-        OUT(["📋  Response\n{ answer: '…',\n  sources: [ { doc_title, source_key } ] }"]):::ext
-
-        USR -->|"POST /query\n{ query: '…' }"| GW
-        GW --> RL
-        RL -->|"query text"| QE
-        QE --> VEC
-        VEC -->|"kNN top-5"| VS
-        VS -->|"retrieved chunks"| PA
-        PA -->|"documents[ ]"| LLM
-        LLM -->|"text  +  citations[ ]"| OUT
-        OUT -->|"JSON response"| USR
+        USR(["👤 User"]):::ext -->|POST /query| GW["API Gateway"]:::lambda
+        GW --> RL["RetrievalLambda"]:::lambda
+        RL -->|search_query| CE2(["Cohere Embed v3\n1024-dim"]):::bedrock
+        CE2 -->|kNN top-5| VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
+        VS -->|retrieved chunks| PA["Prompt Augmentation\npreamble + docs"]:::ext
+        PA -->|documents| LLM(["Cohere Command R+"]):::bedrock
+        LLM -->|answer + citations| OUT(["Response\n{answer, sources}"]):::ext
+        OUT --> USR
     end
 
-    IE -->|"1 024-dim vectors  ·  bulk index"| VS
+    CE1 -->|bulk index · 1024-dim| VS
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
