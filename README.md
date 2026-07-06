@@ -17,6 +17,8 @@ graph LR
 
     subgraph ING["📥 Ingestion"]
         DOC["① 📄 .md / .pdf\nDocuments"]:::s3
+        RAW["② 🪣 S3 asklore-raw"]:::s3
+        DOC -->|upload| RAW
     end
 
     subgraph USQ["🔍 User Query"]
@@ -26,15 +28,17 @@ graph LR
         RESDOC["④ 📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
     end
 
-    CHUNK["② ✂️ ChunkingLambda\n(heading-boundary splits)"]:::lambda
-    EMBED["③ 🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
+    CHUNK["③ ✂️ ChunkingLambda"]:::lambda
+    PROC["④ 🪣 S3 asklore-processed\n(chunks.json)"]:::s3
+    EMBED["⑤ 🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
     CLOUD["☁️ AWS Bedrock"]:::cloud
-    VECTOR[("④ 🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
-    LLM["⑤ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
-    FINAL["⑥ 💬 Grounded Answer\n+ citations[ ]"]
+    VECTOR[("⑥ 🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
+    LLM["⑦ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
+    FINAL["⑧ 💬 Grounded Answer\n+ citations[ ]"]
 
-    DOC  --> CHUNK --> EMBED --> VECTOR
-    SRCH --> PLAY  --> GEAR  --> RESDOC --> VECTOR
+    RAW  -->|S3 Event| CHUNK --> PROC
+    PROC -->|S3 Event| EMBED --> VECTOR
+    SRCH --> PLAY --> GEAR --> RESDOC --> VECTOR
     CHUNK -.-> GEAR
     CLOUD -.-> EMBED
     CLOUD -.-> VECTOR
