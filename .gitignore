@@ -20,6 +20,12 @@ build/
 lambda/**/package/
 lambda/**/*.zip
 
+# CloudFormation generated artifacts — contain S3 presigned URLs, never commit
+template-packaged.yaml
+
+# Claude Code local overrides — may contain personal paths or API URLs
+.claude/settings.local.json
+
 # Env
 .env
 .env.*

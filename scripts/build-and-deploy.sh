@@ -8,7 +8,7 @@
 #   ./scripts/build-and-deploy.sh --deploy  # deploy only (assumes build/ exists)
 set -euo pipefail
 
-STACK_NAME="asklore-stack"
+STACK_NAME="${STACK_NAME:-asklore-stack}"
 ARTIFACTS_BUCKET="asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)"
 BUILD_DIR="build"
 
@@ -44,6 +44,10 @@ if $BUILD; then
     done
 fi
 
+# ── Validate ───────────────────────────────────────────────────────────────────
+echo "==> Validating template..."
+aws cloudformation validate-template --template-body file://template.yaml > /dev/null
+
 # ── Package ────────────────────────────────────────────────────────────────────
 echo "==> Packaging template..."
 aws cloudformation package \
@@ -57,7 +61,8 @@ if $DEPLOY; then
     aws cloudformation deploy \
         --template-file template-packaged.yaml \
         --stack-name "$STACK_NAME" \
-        --capabilities CAPABILITY_NAMED_IAM
+        --capabilities CAPABILITY_NAMED_IAM \
+        --no-fail-on-empty-changeset
 
     echo ""
     echo "==> Outputs:"

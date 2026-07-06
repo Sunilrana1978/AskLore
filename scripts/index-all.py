@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
 """
 One-shot local indexer: reads all chunks.json files from asklore-processed,
-embeds each chunk via Bedrock Titan v2, and indexes into OpenSearch Serverless.
+embeds each chunk via Bedrock Cohere Embed v3, and indexes into OpenSearch Serverless.
 
 Runs sequentially with a 1s delay between Bedrock calls to stay under TPS quota.
 Use this to seed the index without fighting Lambda concurrency limits.
 
 Usage:
+    # Read values from live stack outputs (recommended)
     python scripts/index-all.py
+
+    # Or override via env vars
+    REGION=us-east-1 python scripts/index-all.py
 """
 
 import json
 import os
 import random
+import subprocess
 import sys
 import time
 
@@ -22,12 +27,39 @@ from opensearchpy import OpenSearch, RequestsHttpConnection
 from opensearchpy.exceptions import RequestError
 from requests_aws4auth import AWS4Auth
 
-REGION = "us-west-2"
-PROCESSED_BUCKET = "asklore-processed-074642417296-us-west-2"
-OPENSEARCH_ENDPOINT = "https://f8ipcfh00ub4drmi0xs2.us-west-2.aoss.amazonaws.com"
-INDEX_NAME = "asklore-knowledge"
-EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v1"
-VECTOR_DIM = 1536
+STACK_NAME = os.environ.get("STACK_NAME", "asklore-stack")
+REGION = os.environ.get("REGION") or boto3.session.Session().region_name or "us-west-2"
+INDEX_NAME = os.environ.get("INDEX_NAME", "asklore-knowledge")
+EMBEDDING_MODEL_ID = os.environ.get("EMBEDDING_MODEL_ID", "cohere.embed-english-v3")
+VECTOR_DIM = 1024  # Cohere Embed English v3
+
+
+def _stack_output(key: str) -> str:
+    """Read a CloudFormation stack output by key."""
+    result = subprocess.run(
+        [
+            "aws", "cloudformation", "describe-stacks",
+            "--stack-name", STACK_NAME,
+            "--region", REGION,
+            "--query", f"Stacks[0].Outputs[?OutputKey==`{key}`].OutputValue",
+            "--output", "text",
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    value = result.stdout.strip()
+    if not value:
+        raise RuntimeError(f"Stack output '{key}' not found in stack '{STACK_NAME}'")
+    return value
+
+
+def _resolve_config() -> tuple[str, str]:
+    """Return (processed_bucket, opensearch_endpoint), preferring env vars over stack outputs."""
+    bucket = os.environ.get("PROCESSED_BUCKET") or _stack_output("ProcessedBucketName")
+    endpoint = os.environ.get("OPENSEARCH_ENDPOINT") or _stack_output("CollectionEndpoint")
+    return bucket, endpoint
+
+
+PROCESSED_BUCKET, OPENSEARCH_ENDPOINT = _resolve_config()
 
 s3 = boto3.client("s3", region_name=REGION)
 bedrock = boto3.client("bedrock-runtime", region_name=REGION,
@@ -88,9 +120,9 @@ def embed(text: str) -> list[float]:
         try:
             resp = bedrock.invoke_model(
                 modelId=EMBEDDING_MODEL_ID,
-                body=json.dumps({"inputText": text[:8192]}),
+                body=json.dumps({"texts": [text[:2048]], "input_type": "search_document"}),
             )
-            return json.loads(resp["body"].read())["embedding"]
+            return json.loads(resp["body"].read())["embeddings"][0]
         except bedrock.exceptions.ThrottlingException:
             if attempt == 7:
                 raise
