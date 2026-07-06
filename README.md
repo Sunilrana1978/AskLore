@@ -20,10 +20,10 @@ flowchart TB
     subgraph ING["📥  Ingestion Pipeline"]
         direction LR
         UADM(["👤 Admin / CI"]):::person
-        RAWB["S3  asklore-raw"]:::s3
-        CLMB["ChunkingLambda"]:::lambda
-        PROC["S3  asklore-processed"]:::s3
-        EMBL["EmbeddingLambda + Cohere Embed v3"]:::bedrock
+        RAWB["① S3  asklore-raw"]:::s3
+        CLMB["② ChunkingLambda"]:::lambda
+        PROC["③ S3  asklore-processed"]:::s3
+        EMBL["④ EmbeddingLambda + Cohere Embed v3"]:::bedrock
         UADM -->|.md / .pdf| RAWB -->|S3 Event| CLMB -->|chunks.json| PROC -->|S3 Event| EMBL
     end
 
@@ -32,20 +32,20 @@ flowchart TB
         subgraph RET["🔎  Retrieval"]
             direction LR
             UQRY(["👤 User"]):::person
-            APIG["API Gateway"]:::lambda
-            RLMB["RetrievalLambda"]:::lambda
-            CEMB["Cohere Embed v3  (search_query)"]:::bedrock
+            APIG["⑤ API Gateway"]:::lambda
+            RLMB["⑥ RetrievalLambda"]:::lambda
+            CEMB["⑦ Cohere Embed v3  (search_query)"]:::bedrock
             UQRY -->|POST /query| APIG --> RLMB --> CEMB
         end
-        OSLS[("OpenSearch Serverless — asklore-knowledge")]:::os
+        OSLS[("⑧ OpenSearch Serverless — asklore-knowledge")]:::os
         subgraph AUG["📝  Augmentation"]
             direction LR
-            PAUG["Prompt Augmentation  (top-5 chunks + preamble)"]:::lambda
+            PAUG["⑨ Prompt Augmentation  (top-5 chunks + preamble)"]:::lambda
         end
         subgraph GEN["💬  Generation"]
             direction LR
-            GLLM["Cohere Command R+"]:::bedrock
-            GOUT(["Grounded Answer + citations[ ]"]):::output
+            GLLM["⑩ Cohere Command R+"]:::bedrock
+            GOUT(["⑪ Grounded Answer + citations[]"]):::output
             GLLM --> GOUT
         end
         CEMB ==>|kNN top-5| OSLS
