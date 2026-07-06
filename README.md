@@ -7,57 +7,43 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'dark'}}%%
-flowchart TB
-
-    classDef s3      fill:#FF9900,stroke:#cc7a00,color:#000,font-weight:bold
-    classDef lambda  fill:#E65100,stroke:#bf360c,color:#fff,font-weight:bold
-    classDef bedrock fill:#01A88D,stroke:#007a67,color:#fff,font-weight:bold
-    classDef os      fill:#005EB8,stroke:#003f8a,color:#fff,font-weight:bold
-    classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
+%%{init: {'theme': 'neutral'}}%%
+graph LR
+    classDef s3      fill:#FFF3E0,stroke:#FF9800,stroke-width:2px,color:#212121
+    classDef lambda  fill:#FBE9E7,stroke:#EF5350,stroke-width:2px,color:#212121
+    classDef bedrock fill:#E0F2F1,stroke:#26A69A,stroke-width:2px,color:#212121
+    classDef os      fill:#EDE7F6,stroke:#7E57C2,stroke-width:2px,color:#212121
+    classDef cloud   fill:#FFFDE7,stroke:#FDD835,stroke-width:1px,color:#555,stroke-dasharray:4 4
 
     subgraph ING["📥 Ingestion"]
-        subgraph STOR["📂 Raw Storage"]
-            direction LR
-            DS(["① S3 asklore-raw"]):::s3
-        end
-        subgraph CHUNK_P["✂️ Chunking"]
-            direction LR
-            CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3
-        end
-        subgraph VEC_P["🔢 Vectorization"]
-            direction LR
-            EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
-        end
-        DS -->|S3 Event| CL
-        PROC -->|S3 Event| EL
+        DOC["📄 .md / .pdf\nDocuments"]:::s3
     end
 
-    subgraph QRY["🔍 Text Generation Workflow"]
-        subgraph RET["🔎 Retrieval"]
-            direction LR
-            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
-        end
-        VS[("⑤ OpenSearch Serverless")]:::os
-        subgraph AUG["📝 Augmentation"]
-            direction LR
-            CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
-        end
-        subgraph GEN["💬 Generation"]
-            direction LR
-            LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
-        end
-        CE2 ==>|kNN search| VS
-        VS ==>|top-5 chunks| CTX
-        PA --> LLM
+    subgraph USQ["🔍 User Query"]
+        SRCH["🔍 POST /query"]
+        PLAY["▶️ API Gateway"]:::lambda
+        GEAR["⚙️ RetrievalLambda"]:::lambda
+        RESDOC["📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
     end
 
-    CE1 ==>|bulk index| VS
+    CHUNK["✂️ ChunkingLambda\n(heading-boundary splits)"]:::lambda
+    EMBED["🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
+    CLOUD["☁️ AWS Bedrock"]:::cloud
+    VECTOR[("🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
+    LLM["🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
+    FINAL["💬 Grounded Answer\n+ citations[ ]"]
+
+    DOC  --> CHUNK --> EMBED --> VECTOR
+    SRCH --> PLAY  --> GEAR  --> RESDOC --> VECTOR
+    CHUNK -.-> GEAR
+    CLOUD -.-> EMBED
+    CLOUD -.-> VECTOR
+    VECTOR --> LLM --> FINAL
+    VECTOR -.->|source-citing grounding| FINAL
+
+    style ING fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
+    style USQ fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
 ```
-
-![AskLore RAG Architecture](docs/architecture-overview.png)
-
-![RAG Reference Architecture](docs/rag-reference.png)
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
 
