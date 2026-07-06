@@ -16,9 +16,10 @@ graph LR
     classDef cloud   fill:#FFFDE7,stroke:#FDD835,stroke-width:1px,color:#555,stroke-dasharray:4 4
 
     subgraph ING["📥 Ingestion"]
+        UPLOADER(["👤 User / System"])
         DOC["① 📄 .md / .pdf\nDocuments"]:::s3
         RAW["② 🪣 S3 asklore-raw"]:::s3
-        DOC -->|upload| RAW
+        UPLOADER -->|prepares| DOC -->|upload| RAW
     end
 
     subgraph USQ["🔍 User Query"]
