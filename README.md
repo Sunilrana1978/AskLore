@@ -7,33 +7,36 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 ## Architecture
 
 ```mermaid
-flowchart LR
-    subgraph Ingestion["Document Ingestion"]
+flowchart TB
+
+    subgraph QP["🔍  Query Pipeline — Text Generation Workflow"]
         direction LR
-        A([markdown / PDF]) -->|s3 cp| B[(S3\nasklore-raw)]
-        B -->|S3 Event| C[ChunkingLambda]
-        C -->|chunks.json| D[(S3\nasklore-processed)]
-        D -->|S3 Event| E[EmbeddingLambda]
-        E <-->|1024-dim vectors| F([Bedrock\nCohere Embed v3])
-        E -->|bulk index| G[(OpenSearch Serverless\nasklore-knowledge)]
+        User(["👤 User"]) -->|POST /query| AG["API Gateway"]
+        AG --> RL["RetrievalLambda"]
+        RL -->|input_type: search_query| CE2(["Bedrock\nCohere Embed v3\n1024-dim"])
+        CE2 --> Vec["Query Embedding\n[ 0.89  −0.02  0.55  ··· ]"]
+        Vec -->|kNN search| VS
+        VS -->|top-5 chunks| PA["Prompt Augmentation\npreamble + retrieved docs"]
+        PA --> LLM(["Bedrock\nCohere Command R+"])
+        LLM -->|answer + citations| Resp["📋 { answer, sources }"]
+        Resp --> User
     end
 
-    subgraph Query["Query Pipeline"]
+    VS[("OpenSearch Serverless\nasklore-knowledge\ncosine kNN index")]
+
+    subgraph IP["📥  Data Ingestion Workflow"]
         direction LR
-        H([Client]) -->|POST /query| I[API Gateway]
-        I --> J[RetrievalLambda]
-        J <-->|embed query| K([Bedrock\nCohere Embed v3])
-        J -->|kNN top-5| G
-        G -->|chunks| J
-        J <-->|documents + citations| L([Bedrock\nCohere Command R+])
-        J -->|answer + sources| I
-        I --> H
+        DS(["📁 S3 asklore-raw\n.md / .pdf"]) -->|s3:ObjectCreated| CL["ChunkingLambda\nsplit by heading\nmin 80 · max 4000 chars"]
+        CL -->|chunks.json| PC["S3 asklore-processed\ndomain/doc-id/chunks.json"]
+        PC -->|s3:ObjectCreated| EL["EmbeddingLambda"]
+        EL -->|input_type: search_document| CE1(["Bedrock\nCohere Embed v3\n1024-dim"])
+        CE1 -->|bulk index vectors| VS
     end
 ```
 
-**Ingestion flow:** S3 upload → `ChunkingLambda` (splits by heading, writes `chunks.json`) → `EmbeddingLambda` (Cohere Embed v3, 1024-dim, bulk-indexes into OpenSearch Serverless).
+**Query flow:** `POST /query` → `RetrievalLambda` embeds the query (Cohere Embed v3, `search_query`), runs kNN search top-5 against OpenSearch, augments a preamble prompt with the retrieved chunks, calls Cohere Command R+, returns only the actually-cited sources from `citations[]`.
 
-**Query flow:** `POST /query` → `RetrievalLambda` embeds the query with Cohere Embed v3, runs kNN search (top-5 chunks), passes chunks as grounded documents to Cohere Command R+, returns answer with only the actually-cited sources.
+**Ingestion flow:** S3 upload → `ChunkingLambda` splits by heading (min 80 / max 4000 chars, writes `chunks.json`) → `EmbeddingLambda` embeds each chunk (Cohere Embed v3, `search_document`, 1024-dim) and bulk-indexes into OpenSearch Serverless.
 
 ---
 
