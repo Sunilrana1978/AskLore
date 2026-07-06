@@ -20,8 +20,9 @@ flowchart TB
         direction TB
         subgraph RET["🔎 Retrieval"]
             direction LR
-            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock --> VS[("⑤ OpenSearch Serverless")]:::os
+            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
         end
+        VS[("⑤ OpenSearch\nServerless")]:::os
         subgraph AG[" "]
             direction LR
             subgraph AUG["📝 Augmentation"]
@@ -34,7 +35,8 @@ flowchart TB
             end
             PA --> LLM
         end
-        VS -->|top-5 chunks| CTX
+        CE2 ==>|kNN search| VS
+        VS ==>|top-5 chunks| CTX
     end
 
     subgraph ING["📥 Ingestion"]
@@ -42,7 +44,7 @@ flowchart TB
         DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
     end
 
-    CE1 -->|bulk index| VS
+    CE1 ==>|bulk index| VS
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
