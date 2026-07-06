@@ -8,7 +8,7 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 
 ```mermaid
 %%{init: {'theme': 'dark'}}%%
-flowchart TB
+flowchart LR
 
     classDef s3      fill:#FF9900,stroke:#cc7a00,color:#000,font-weight:bold
     classDef lambda  fill:#E65100,stroke:#bf360c,color:#fff,font-weight:bold
@@ -17,26 +17,40 @@ flowchart TB
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
     subgraph ING["📥  Ingestion Pipeline"]
-        direction LR
-        RAW(["S3 · asklore-raw\n.md / .pdf"]):::s3 -->|S3 Event| CL["ChunkingLambda\nheading split · metadata"]:::lambda
-        CL -->|chunks.json| PROC(["S3 · asklore-processed"]):::s3
-        PROC -->|S3 Event| EL["EmbeddingLambda"]:::lambda
-        EL -->|search_document| CE1(["Cohere Embed v3\n1024-dim"]):::bedrock
+        direction TB
+        RAW(["S3 · asklore-raw\n.md / .pdf"]):::s3
+        CL["ChunkingLambda\nheading split · metadata"]:::lambda
+        PROC(["S3 · asklore-processed"]):::s3
+        EL["EmbeddingLambda"]:::lambda
+        CE1(["Cohere Embed v3\nsearch_document · 1024-dim"]):::bedrock
+
+        RAW -->|S3 Event| CL
+        CL -->|chunks.json| PROC
+        PROC -->|S3 Event| EL
+        EL --> CE1
     end
 
-    subgraph QRY["🔍  Query Pipeline  —  Text Generation Workflow"]
-        direction LR
-        USR(["👤 User"]):::ext -->|POST /query| GW["API Gateway"]:::lambda
-        GW --> RL["RetrievalLambda"]:::lambda
-        RL -->|search_query| CE2(["Cohere Embed v3\n1024-dim"]):::bedrock
-        CE2 -->|kNN top-5| VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
-        VS -->|retrieved chunks| PA["Prompt Augmentation\npreamble + docs"]:::ext
-        PA -->|documents| LLM(["Cohere Command R+"]):::bedrock
-        LLM -->|answer + citations| OUT(["Response\n{answer, sources}"]):::ext
-        OUT --> USR
+    subgraph QRY["🔍  Query Pipeline"]
+        direction TB
+        USR(["👤 User"]):::ext
+        GW["API Gateway"]:::lambda
+        RL["RetrievalLambda"]:::lambda
+        CE2(["Cohere Embed v3\nsearch_query · 1024-dim"]):::bedrock
+        VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
+        PA["Prompt Augmentation\npreamble + top-5 chunks"]:::ext
+        LLM(["Cohere Command R+"]):::bedrock
+        OUT(["Response\n{ answer, sources }"]):::ext
+
+        USR -->|POST /query| GW
+        GW --> RL
+        RL -->|query| CE2
+        CE2 -->|kNN top-5| VS
+        VS -->|retrieved chunks| PA
+        PA -->|documents| LLM
+        LLM -->|answer + citations| OUT
     end
 
-    CE1 -->|bulk index · 1024-dim| VS
+    CE1 -->|"bulk index · 1024-dim"| VS
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
