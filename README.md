@@ -22,12 +22,23 @@ graph LR
         UPLOADER -->|prepares| DOC -->|upload| RAW
     end
 
-    subgraph USQ["🔍 User Query"]
+    subgraph RET["🔎 Retrieval"]
         USR(["👤 User"])
         SRCH["① 🔍 POST /query"]
         PLAY["② ▶️ API Gateway"]:::lambda
         GEAR["③ ⚙️ RetrievalLambda"]:::lambda
         RESDOC["④ 📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
+        USR --> SRCH --> PLAY --> GEAR --> RESDOC
+    end
+
+    subgraph AUG["📝 Augmentation"]
+        PA["⑦ 📋 Prompt Augmentation\n(top-5 chunks + preamble)"]
+    end
+
+    subgraph GEN["💬 Generation"]
+        LLM["⑧ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
+        FINAL["⑨ 💬 Grounded Answer\n+ citations[ ]"]
+        LLM --> FINAL
     end
 
     CHUNK["③ ✂️ ChunkingLambda"]:::lambda
@@ -35,19 +46,20 @@ graph LR
     EMBED["⑤ 🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
     CLOUD["☁️ AWS Bedrock"]:::cloud
     VECTOR[("⑥ 🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
-    LLM["⑦ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
-    FINAL["⑧ 💬 Grounded Answer\n+ citations[ ]"]
 
     RAW  -->|S3 Event| CHUNK --> PROC
     PROC -->|S3 Event| EMBED --> VECTOR
-    USR --> SRCH --> PLAY --> GEAR --> RESDOC --> VECTOR
+    RESDOC -->|kNN search| VECTOR
+    VECTOR -->|top-5 chunks| PA
+    PA --> LLM
     CLOUD -.-> EMBED
     CLOUD -.-> VECTOR
-    VECTOR --> LLM --> FINAL
     VECTOR -.->|source-citing grounding| FINAL
 
     style ING fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
-    style USQ fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
+    style RET fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
+    style AUG fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
+    style GEN fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
