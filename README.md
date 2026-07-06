@@ -16,22 +16,22 @@ graph LR
     classDef cloud   fill:#FFFDE7,stroke:#FDD835,stroke-width:1px,color:#555,stroke-dasharray:4 4
 
     subgraph ING["📥 Ingestion"]
-        DOC["📄 .md / .pdf\nDocuments"]:::s3
+        DOC["① 📄 .md / .pdf\nDocuments"]:::s3
     end
 
     subgraph USQ["🔍 User Query"]
-        SRCH["🔍 POST /query"]
-        PLAY["▶️ API Gateway"]:::lambda
-        GEAR["⚙️ RetrievalLambda"]:::lambda
-        RESDOC["📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
+        SRCH["① 🔍 POST /query"]
+        PLAY["② ▶️ API Gateway"]:::lambda
+        GEAR["③ ⚙️ RetrievalLambda"]:::lambda
+        RESDOC["④ 📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
     end
 
-    CHUNK["✂️ ChunkingLambda\n(heading-boundary splits)"]:::lambda
-    EMBED["🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
+    CHUNK["② ✂️ ChunkingLambda\n(heading-boundary splits)"]:::lambda
+    EMBED["③ 🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
     CLOUD["☁️ AWS Bedrock"]:::cloud
-    VECTOR[("🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
-    LLM["🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
-    FINAL["💬 Grounded Answer\n+ citations[ ]"]
+    VECTOR[("④ 🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
+    LLM["⑤ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
+    FINAL["⑥ 💬 Grounded Answer\n+ citations[ ]"]
 
     DOC  --> CHUNK --> EMBED --> VECTOR
     SRCH --> PLAY  --> GEAR  --> RESDOC --> VECTOR
