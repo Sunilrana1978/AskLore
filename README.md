@@ -18,14 +18,14 @@ flowchart TB
 
     subgraph QRY["🔍 Text Generation Workflow"]
         direction LR
-        USR(["👤 User"]):::ext
-        GW["API Gateway"]:::lambda
-        RL["RetrievalLambda"]:::lambda
-        CE2(["Cohere Embed v3"]):::bedrock
-        CTX["Context"]:::ext
-        PA["Prompt Augmentation"]:::ext
-        LLM(["Cohere Command R+"]):::bedrock
-        RESP(["Response"]):::ext
+        USR(["① User"]):::ext
+        GW["② API Gateway"]:::lambda
+        RL["③ RetrievalLambda"]:::lambda
+        CE2(["④ Cohere Embed v3"]):::bedrock
+        CTX["⑤ Context"]:::ext
+        PA["⑥ Prompt Augmentation"]:::ext
+        LLM(["⑦ Cohere Command R+"]):::bedrock
+        RESP(["⑧ Response"]):::ext
         USR --> GW --> RL --> CE2
         CTX --> PA --> LLM --> RESP
     end
@@ -34,11 +34,11 @@ flowchart TB
 
     subgraph ING["📥 Data Ingestion Workflow"]
         direction LR
-        DS(["S3 asklore-raw"]):::s3
-        CL["ChunkingLambda"]:::lambda
-        PROC(["S3 asklore-processed"]):::s3
-        EL["EmbeddingLambda"]:::lambda
-        CE1(["Cohere Embed v3"]):::bedrock
+        DS(["① S3 asklore-raw"]):::s3
+        CL["② ChunkingLambda"]:::lambda
+        PROC(["③ S3 asklore-processed"]):::s3
+        EL["④ EmbeddingLambda"]:::lambda
+        CE1(["⑤ Cohere Embed v3"]):::bedrock
         DS -->|S3 Event| CL -->|chunks.json| PROC -->|S3 Event| EL --> CE1
     end
 
