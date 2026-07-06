@@ -8,7 +8,7 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 
 ```mermaid
 %%{init: {'theme': 'neutral'}}%%
-graph LR
+graph TB
     classDef s3      fill:#FFF3E0,stroke:#FF9800,stroke-width:2px,color:#212121
     classDef lambda  fill:#FBE9E7,stroke:#EF5350,stroke-width:2px,color:#212121
     classDef bedrock fill:#E0F2F1,stroke:#26A69A,stroke-width:2px,color:#212121
