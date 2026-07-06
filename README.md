@@ -7,59 +7,53 @@ Internal tribal-knowledge RAG assistant built on AWS. Drop a markdown or PDF doc
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'neutral'}}%%
-graph TB
-    classDef s3      fill:#FFF3E0,stroke:#FF9800,stroke-width:2px,color:#212121
-    classDef lambda  fill:#FBE9E7,stroke:#EF5350,stroke-width:2px,color:#212121
-    classDef bedrock fill:#E0F2F1,stroke:#26A69A,stroke-width:2px,color:#212121
-    classDef os      fill:#EDE7F6,stroke:#7E57C2,stroke-width:2px,color:#212121
-    classDef cloud   fill:#FFFDE7,stroke:#FDD835,stroke-width:1px,color:#555,stroke-dasharray:4 4
+%%{init: {'theme': 'base', 'themeVariables': {'clusterBkg': '#F1F5F9', 'clusterBorder': '#CBD5E1', 'lineColor': '#64748B', 'fontSize': '14px'}}}%%
+flowchart TB
 
-    subgraph ING["📥 Ingestion"]
-        UPLOADER(["👤 User / System"])
-        DOC["① 📄 .md / .pdf\nDocuments"]:::s3
-        RAW["② 🪣 S3 asklore-raw"]:::s3
-        UPLOADER -->|prepares| DOC -->|upload| RAW
+    classDef s3      fill:#FEF9C3,stroke:#CA8A04,color:#1C1917,font-weight:bold
+    classDef lambda  fill:#FEE2E2,stroke:#B91C1C,color:#1C1917,font-weight:bold
+    classDef bedrock fill:#D1FAE5,stroke:#065F46,color:#1C1917,font-weight:bold
+    classDef os      fill:#EDE9FE,stroke:#5B21B6,color:#1C1917,font-weight:bold
+    classDef person  fill:#E0F2FE,stroke:#0369A1,color:#1C1917
+    classDef output  fill:#F0FDF4,stroke:#15803D,color:#1C1917,font-weight:bold
+
+    subgraph ING["📥  Ingestion Pipeline"]
+        direction LR
+        UADM(["👤 Admin / CI"]):::person
+        RAWB["S3  asklore-raw"]:::s3
+        CLMB["ChunkingLambda"]:::lambda
+        PROC["S3  asklore-processed"]:::s3
+        EMBL["EmbeddingLambda + Cohere Embed v3"]:::bedrock
+        UADM -->|.md / .pdf| RAWB -->|S3 Event| CLMB -->|chunks.json| PROC -->|S3 Event| EMBL
     end
 
-    subgraph RET["🔎 Retrieval"]
-        USR(["👤 User"])
-        SRCH["① 🔍 POST /query"]
-        PLAY["② ▶️ API Gateway"]:::lambda
-        GEAR["③ ⚙️ RetrievalLambda"]:::lambda
-        RESDOC["④ 📄 Query Embedding\n(Cohere Embed v3)"]:::bedrock
-        USR --> SRCH --> PLAY --> GEAR --> RESDOC
+    subgraph QRY["🔍  Query Pipeline"]
+        direction TB
+        subgraph RET["🔎  Retrieval"]
+            direction LR
+            UQRY(["👤 User"]):::person
+            APIG["API Gateway"]:::lambda
+            RLMB["RetrievalLambda"]:::lambda
+            CEMB["Cohere Embed v3  (search_query)"]:::bedrock
+            UQRY -->|POST /query| APIG --> RLMB --> CEMB
+        end
+        OSLS[("OpenSearch Serverless — asklore-knowledge")]:::os
+        subgraph AUG["📝  Augmentation"]
+            direction LR
+            PAUG["Prompt Augmentation  (top-5 chunks + preamble)"]:::lambda
+        end
+        subgraph GEN["💬  Generation"]
+            direction LR
+            GLLM["Cohere Command R+"]:::bedrock
+            GOUT(["Grounded Answer + citations[ ]"]):::output
+            GLLM --> GOUT
+        end
+        CEMB ==>|kNN top-5| OSLS
+        OSLS ==>|top-5 chunks| PAUG
+        PAUG ==> GLLM
     end
 
-    subgraph AUG["📝 Augmentation"]
-        PA["⑦ 📋 Prompt Augmentation\n(top-5 chunks + preamble)"]
-    end
-
-    subgraph GEN["💬 Generation"]
-        LLM["⑧ 🧠 Cohere Command R+\n(AWS Bedrock)"]:::bedrock
-        FINAL["⑨ 💬 Grounded Answer\n+ citations[ ]"]
-        LLM --> FINAL
-    end
-
-    CHUNK["③ ✂️ ChunkingLambda"]:::lambda
-    PROC["④ 🪣 S3 asklore-processed\n(chunks.json)"]:::s3
-    EMBED["⑤ 🔢 EmbeddingLambda\n+ Cohere Embed v3"]:::bedrock
-    CLOUD["☁️ AWS Bedrock"]:::cloud
-    VECTOR[("⑥ 🔵 OpenSearch Serverless\nasklore-knowledge")]:::os
-
-    RAW  -->|S3 Event| CHUNK --> PROC
-    PROC -->|S3 Event| EMBED --> VECTOR
-    RESDOC -->|kNN search| VECTOR
-    VECTOR -->|top-5 chunks| PA
-    PA --> LLM
-    CLOUD -.-> EMBED
-    CLOUD -.-> VECTOR
-    VECTOR -.->|source-citing grounding| FINAL
-
-    style ING fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
-    style RET fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
-    style AUG fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
-    style GEN fill:#F8FAFF,stroke:#B0BEC5,stroke-width:1px,stroke-dasharray:5 5
+    EMBL ==>|bulk index| OSLS
 ```
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `ChunkingLambda`, which splits by heading boundary (min 80 / max 4 000 chars), attaches domain metadata, and writes `chunks.json` to `asklore-processed`. That event triggers `EmbeddingLambda`, which calls Cohere Embed v3 (`search_document`, 1024-dim) and bulk-indexes the vectors into OpenSearch Serverless.
