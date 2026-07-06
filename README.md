@@ -16,32 +16,28 @@ flowchart TB
     classDef os      fill:#005EB8,stroke:#003f8a,color:#fff,font-weight:bold
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
+    subgraph ING["📥 Ingestion"]
+        direction LR
+        DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
+    end
+
     subgraph QRY["🔍 Text Generation Workflow"]
-        direction TB
         subgraph RET["🔎 Retrieval"]
             direction LR
             USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
         end
-        VS[("⑤ OpenSearch\nServerless")]:::os
-        subgraph AG[" "]
+        VS[("⑤ OpenSearch Serverless")]:::os
+        subgraph AUG["📝 Augmentation"]
             direction LR
-            subgraph AUG["📝 Augmentation"]
-                direction LR
-                CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
-            end
-            subgraph GEN["💬 Generation"]
-                direction LR
-                LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
-            end
-            PA --> LLM
+            CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
+        end
+        subgraph GEN["💬 Generation"]
+            direction LR
+            LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
         end
         CE2 ==>|kNN search| VS
         VS ==>|top-5 chunks| CTX
-    end
-
-    subgraph ING["📥 Ingestion"]
-        direction LR
-        DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
+        PA --> LLM
     end
 
     CE1 ==>|bulk index| VS
