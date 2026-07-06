@@ -18,28 +18,26 @@ flowchart TB
 
     subgraph QRY["🔍 Text Generation Workflow"]
         direction LR
-        USR(["① User"]):::ext
-        GW["② API Gateway"]:::lambda
-        RL["③ RetrievalLambda"]:::lambda
-        CE2(["④ Cohere Embed v3"]):::bedrock
-        CTX["⑤ Context"]:::ext
-        PA["⑥ Prompt Augmentation"]:::ext
-        LLM(["⑦ Cohere Command R+"]):::bedrock
-        RESP(["⑧ Response"]):::ext
-        USR --> GW --> RL --> CE2
-        CTX --> PA --> LLM --> RESP
+        subgraph RET["🔎 Retrieval"]
+            direction LR
+            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
+        end
+        subgraph AUG["📝 Augmentation"]
+            direction LR
+            CTX["⑤ Context"]:::ext --> PA["⑥ Prompt Augmentation"]:::ext
+        end
+        subgraph GEN["💬 Generation"]
+            direction LR
+            LLM(["⑦ Cohere Command R+"]):::bedrock --> RESP(["⑧ Response"]):::ext
+        end
+        PA --> LLM
     end
 
     VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
 
-    subgraph ING["📥 Data Ingestion Workflow"]
+    subgraph ING["📥 Ingestion"]
         direction LR
-        DS(["① S3 asklore-raw"]):::s3
-        CL["② ChunkingLambda"]:::lambda
-        PROC(["③ S3 asklore-processed"]):::s3
-        EL["④ EmbeddingLambda"]:::lambda
-        CE1(["⑤ Cohere Embed v3"]):::bedrock
-        DS -->|S3 Event| CL -->|chunks.json| PROC -->|S3 Event| EL --> CE1
+        DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
     end
 
     CE2 -->|kNN search| VS
