@@ -17,23 +17,24 @@ flowchart TB
     classDef ext     fill:#455A64,stroke:#546E7A,color:#fff
 
     subgraph QRY["🔍 Text Generation Workflow"]
-        direction LR
+        direction TB
         subgraph RET["🔎 Retrieval"]
             direction LR
-            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
+            USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock --> VS[("⑤ OpenSearch Serverless")]:::os
         end
-        VS[("⑤ OpenSearch Serverless")]:::os
-        subgraph AUG["📝 Augmentation"]
+        subgraph AG[" "]
             direction LR
-            CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
+            subgraph AUG["📝 Augmentation"]
+                direction LR
+                CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
+            end
+            subgraph GEN["💬 Generation"]
+                direction LR
+                LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
+            end
+            PA --> LLM
         end
-        subgraph GEN["💬 Generation"]
-            direction LR
-            LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
-        end
-        CE2 -->|kNN search| VS
         VS -->|top-5 chunks| CTX
-        PA --> LLM
     end
 
     subgraph ING["📥 Ingestion"]
