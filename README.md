@@ -22,26 +22,25 @@ flowchart TB
             direction LR
             USR(["① User"]):::ext --> GW["② API Gateway"]:::lambda --> RL["③ RetrievalLambda"]:::lambda --> CE2(["④ Cohere Embed v3"]):::bedrock
         end
+        VS[("⑤ OpenSearch Serverless")]:::os
         subgraph AUG["📝 Augmentation"]
             direction LR
-            CTX["⑤ Context"]:::ext --> PA["⑥ Prompt Augmentation"]:::ext
+            CTX["⑥ Context"]:::ext --> PA["⑦ Prompt Augmentation"]:::ext
         end
         subgraph GEN["💬 Generation"]
             direction LR
-            LLM(["⑦ Cohere Command R+"]):::bedrock --> RESP(["⑧ Response"]):::ext
+            LLM(["⑧ Cohere Command R+"]):::bedrock --> RESP(["⑨ Response"]):::ext
         end
+        CE2 -->|kNN search| VS
+        VS -->|top-5 chunks| CTX
         PA --> LLM
     end
-
-    VS[("OpenSearch Serverless\nasklore-knowledge")]:::os
 
     subgraph ING["📥 Ingestion"]
         direction LR
         DS(["① S3 asklore-raw"]):::s3 -->|S3 Event| CL["② ChunkingLambda"]:::lambda -->|chunks.json| PROC(["③ S3 asklore-processed"]):::s3 -->|S3 Event| EL["④ EmbeddingLambda"]:::lambda --> CE1(["⑤ Cohere Embed v3"]):::bedrock
     end
 
-    CE2 -->|kNN search| VS
-    VS -->|top-5 chunks| CTX
     CE1 -->|bulk index| VS
 ```
 
