@@ -196,7 +196,7 @@ Resources:
       Handler: handler.handler
       Code: build/retrieval
       Role: !GetAtt RetrievalLambdaRole.Arn
-      Timeout: 30
+      Timeout: 28
       MemorySize: 256
       Environment:
         Variables:

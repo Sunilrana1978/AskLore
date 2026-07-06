@@ -23,16 +23,11 @@ INDEX_NAME = os.environ["INDEX_NAME"]
 EMBEDDING_MODEL_ID = os.environ["EMBEDDING_MODEL_ID"]
 VECTOR_DIM = 1024  # Cohere Embed English v3 output dimension
 
-_os_client: OpenSearch | None = None
-
-
 # ── OpenSearch client ─────────────────────────────────────────────────────────
 
 def get_os_client() -> OpenSearch:
-    global _os_client
-    if _os_client is not None:
-        return _os_client
-
+    # Credentials are fetched fresh each invocation — frozen creds expire after
+    # ~1 hour and would 403 on warm Lambda containers that live longer than that.
     region = os.environ.get("AWS_REGION", "us-west-2")
     creds = boto3.session.Session().get_credentials().get_frozen_credentials()
     auth = AWS4Auth(
@@ -43,7 +38,7 @@ def get_os_client() -> OpenSearch:
         session_token=creds.token,
     )
     host = OPENSEARCH_ENDPOINT.replace("https://", "").rstrip("/")
-    _os_client = OpenSearch(
+    return OpenSearch(
         hosts=[{"host": host, "port": 443}],
         http_auth=auth,
         use_ssl=True,
@@ -51,7 +46,6 @@ def get_os_client() -> OpenSearch:
         connection_class=RequestsHttpConnection,
         timeout=30,
     )
-    return _os_client
 
 
 # ── Index management ──────────────────────────────────────────────────────────
@@ -119,36 +113,36 @@ def handler(event, context):
     ensure_index(client)
 
     for record in event["Records"]:
-        bucket = record["s3"]["bucket"]["name"]
         key = unquote_plus(record["s3"]["object"]["key"])
+        try:
+            bucket = record["s3"]["bucket"]["name"]
 
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        chunks: list[dict] = json.loads(obj["Body"].read())
-        print(f"Embedding {len(chunks)} chunks from {key}")
+            obj = s3.get_object(Bucket=bucket, Key=key)
+            chunks: list[dict] = json.loads(obj["Body"].read())
+            print(f"Embedding {len(chunks)} chunks from {key}")
 
-        # Embed all chunks then bulk-index in one request.
-        # AOSS does not allow explicit IDs in single-document index calls,
-        # but the _bulk API supports them for idempotent upserts.
-        # AOSS does not support explicit document IDs; let it auto-generate.
-        # Idempotent upsert by chunk_id is deferred to Phase 2 dedup logic.
-        bulk_body = []
-        for chunk in chunks:
-            vector = embed(chunk["text"])
-            bulk_body.append({"index": {"_index": INDEX_NAME}})
-            bulk_body.append({
-                "vector": vector,
-                "text": chunk["text"],
-                "chunk_id": chunk["chunk_id"],
-                "source_key": chunk["source_key"],
-                "domain": chunk["domain"],
-                "doc_title": chunk["doc_title"],
-                "section_title": chunk.get("section_title", ""),
-                "upload_date": chunk.get("upload_date", ""),
-            })
+            # AOSS does not support explicit document IDs; let it auto-generate.
+            # Idempotent upsert by chunk_id is deferred to Phase 2 dedup logic.
+            bulk_body = []
+            for chunk in chunks:
+                vector = embed(chunk["text"])
+                bulk_body.append({"index": {"_index": INDEX_NAME}})
+                bulk_body.append({
+                    "vector": vector,
+                    "text": chunk["text"],
+                    "chunk_id": chunk["chunk_id"],
+                    "source_key": chunk["source_key"],
+                    "domain": chunk["domain"],
+                    "doc_title": chunk["doc_title"],
+                    "section_title": chunk.get("section_title", ""),
+                    "upload_date": chunk.get("upload_date", ""),
+                })
 
-        resp = client.bulk(body=bulk_body)
-        errors = [item for item in resp.get("items", []) if "error" in item.get("index", {})]
-        if errors:
-            print(f"[WARN] {len(errors)} bulk index errors: {errors[:2]}")
-        indexed = len(bulk_body) // 2 - len(errors)
-        print(f"[OK] {key} → {indexed} chunks indexed into '{INDEX_NAME}'")
+            resp = client.bulk(body=bulk_body)
+            errors = [item for item in resp.get("items", []) if "error" in item.get("index", {})]
+            if errors:
+                print(f"[WARN] {len(errors)} bulk index errors: {errors[:2]}")
+            indexed = len(bulk_body) // 2 - len(errors)
+            print(f"[OK] {key} → {indexed} chunks indexed into '{INDEX_NAME}'")
+        except Exception as exc:
+            print(f"[ERROR] Failed to process {key}: {exc}")

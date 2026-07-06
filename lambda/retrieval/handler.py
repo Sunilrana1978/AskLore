@@ -28,16 +28,11 @@ PREAMBLE = (
     "Always cite the documents you used."
 )
 
-_os_client: OpenSearch | None = None
-
-
 # ── OpenSearch client ─────────────────────────────────────────────────────────
 
 def get_os_client() -> OpenSearch:
-    global _os_client
-    if _os_client is not None:
-        return _os_client
-
+    # Credentials are fetched fresh each invocation — frozen creds expire after
+    # ~1 hour and would 403 on warm Lambda containers that live longer than that.
     region = os.environ.get("AWS_REGION", "us-east-1")
     creds = boto3.session.Session().get_credentials().get_frozen_credentials()
     auth = AWS4Auth(
@@ -48,7 +43,7 @@ def get_os_client() -> OpenSearch:
         session_token=creds.token,
     )
     host = OPENSEARCH_ENDPOINT.replace("https://", "").rstrip("/")
-    _os_client = OpenSearch(
+    return OpenSearch(
         hosts=[{"host": host, "port": 443}],
         http_auth=auth,
         use_ssl=True,
@@ -56,7 +51,6 @@ def get_os_client() -> OpenSearch:
         connection_class=RequestsHttpConnection,
         timeout=30,
     )
-    return _os_client
 
 
 # ── Core operations ───────────────────────────────────────────────────────────
@@ -129,7 +123,10 @@ def _resp(status: int, body: dict) -> dict:
 
 
 def handler(event, context):
-    body = json.loads(event.get("body") or "{}")
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return _resp(400, {"error": "request body must be valid JSON"})
     query = body.get("query", "").strip()
     if not query:
         return _resp(400, {"error": "query is required"})
