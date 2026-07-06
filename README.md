@@ -39,7 +39,6 @@ graph LR
     RAW  -->|S3 Event| CHUNK --> PROC
     PROC -->|S3 Event| EMBED --> VECTOR
     SRCH --> PLAY --> GEAR --> RESDOC --> VECTOR
-    CHUNK -.-> GEAR
     CLOUD -.-> EMBED
     CLOUD -.-> VECTOR
     VECTOR --> LLM --> FINAL
