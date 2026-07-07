@@ -20,10 +20,12 @@ flowchart TB
     subgraph ING["📥  Ingestion Pipeline"]
         direction LR
         UADM(["👤 Admin / CI"]):::person
-        RAWB["① S3  asklore-raw"]:::s3
-        TRIG["② IngestionTriggerLambda"]:::lambda
-        KB["③ Bedrock Knowledge Base  (FIXED_SIZE chunking + Cohere Embed v3)"]:::bedrock
-        UADM -->|.md / .pdf| RAWB -->|S3 Event| TRIG -->|StartIngestionJob| KB
+        UPLB["① S3  asklore-raw-uploads"]:::s3
+        DEDL["② DedupLambda  (SHA-256 hash + DynamoDB check)"]:::lambda
+        RAWB["③ S3  asklore-raw"]:::s3
+        TRIG["④ IngestionTriggerLambda"]:::lambda
+        KB["⑤ Bedrock Knowledge Base  (FIXED_SIZE chunking + Cohere Embed v3)"]:::bedrock
+        UADM -->|.md / .pdf| UPLB -->|S3 Event| DEDL -->|new content| RAWB -->|S3 Event| TRIG -->|StartIngestionJob| KB
     end
 
     subgraph QRY["🔍  Query Pipeline"]
@@ -31,13 +33,13 @@ flowchart TB
         subgraph RET["🔎  Retrieval + Generation"]
             direction LR
             UQRY(["👤 User"]):::person
-            APIG["④ API Gateway"]:::lambda
-            RLMB["⑤ RetrievalLambda"]:::lambda
-            RAG["⑥ RetrieveAndGenerate"]:::bedrock
+            APIG["⑥ API Gateway"]:::lambda
+            RLMB["⑦ RetrievalLambda"]:::lambda
+            RAG["⑧ RetrieveAndGenerate"]:::bedrock
             UQRY -->|POST /query| APIG --> RLMB --> RAG
         end
-        OSLS[("⑦ OpenSearch Serverless — asklore-kb-index")]:::os
-        GOUT(["⑧ Grounded Answer + citations[]"]):::output
+        OSLS[("⑨ OpenSearch Serverless — asklore-kb-index")]:::os
+        GOUT(["⑩ Grounded Answer + citations[]"]):::output
         RAG ==>|vector search| OSLS
         OSLS ==>|top-5 chunks| RAG
         RAG ==> GOUT
@@ -46,7 +48,7 @@ flowchart TB
     KB ==>|bulk index| OSLS
 ```
 
-**Ingestion flow:** A `.md` or `.pdf` file dropped into S3 triggers `IngestionTriggerLambda`, which calls Bedrock `StartIngestionJob` on the Knowledge Base's S3 data source. The Knowledge Base owns chunking (`FIXED_SIZE`), embedding (Cohere Embed v3, 1024-dim), and indexing into OpenSearch Serverless — no custom chunking/embedding Lambda code.
+**Ingestion flow:** A `.md` or `.pdf` file dropped into `asklore-raw-uploads` triggers `DedupLambda`, which SHA-256-hashes the content and conditionally writes to DynamoDB (`asklore-file-hashes`) — new content is copied into `asklore-raw`, duplicates are deleted from the landing bucket. The copy into `asklore-raw` triggers `IngestionTriggerLambda`, which calls Bedrock `StartIngestionJob` on the Knowledge Base's S3 data source. The Knowledge Base owns chunking (`FIXED_SIZE`), embedding (Cohere Embed v3, 1024-dim), and indexing into OpenSearch Serverless — no custom chunking/embedding Lambda code.
 
 **Query flow:** `POST /query` → `RetrievalLambda` calls Bedrock `RetrieveAndGenerate`, which does vector search against the Knowledge Base and grounded generation with Cohere Command R+ in a single call, and returns only the chunks actually referenced in `citations[]` as `sources`.
 
@@ -56,7 +58,8 @@ flowchart TB
 
 | Role | Service |
 |---|---|
-| Document storage + event trigger | S3 + S3 Event Notifications |
+| Document landing + dedup | S3 (`asklore-raw-uploads`) + S3 Event Notifications + DynamoDB (`asklore-file-hashes`) |
+| Document storage + event trigger | S3 (`asklore-raw`) + S3 Event Notifications |
 | Ingestion orchestration | Bedrock Knowledge Base + Data Source (`asklore-kb`) |
 | Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
 | Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) via `RetrieveAndGenerate` |

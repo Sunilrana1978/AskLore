@@ -8,7 +8,7 @@ AskLore is a greenfield internal tribal-knowledge RAG assistant built entirely o
 
 ## Architecture
 
-**Ingestion pipeline:** S3 upload (`asklore-raw`) → S3 Event → `IngestionTriggerLambda` → Bedrock `StartIngestionJob` → Knowledge Base data source sync (KB-managed `FIXED_SIZE` chunking + Cohere Embed v3 embedding) → OpenSearch Serverless (`asklore-kb-index`)
+**Ingestion pipeline:** S3 upload (`asklore-raw-uploads`) → S3 Event → `DedupLambda` (SHA-256 hash, conditional `asklore-file-hashes` DynamoDB write) → new content copied into `asklore-raw` / duplicate deleted from the landing bucket → S3 Event → `IngestionTriggerLambda` → Bedrock `StartIngestionJob` → Knowledge Base data source sync (KB-managed `FIXED_SIZE` chunking + Cohere Embed v3 embedding) → OpenSearch Serverless (`asklore-kb-index`)
 
 **Query pipeline:** `POST /query` → API Gateway → `RetrievalLambda` → Bedrock `RetrieveAndGenerate` (KB vector search + Cohere Command R+ grounded generation in one call) → `{answer, sources}`
 
@@ -16,6 +16,7 @@ AskLore is a greenfield internal tribal-knowledge RAG assistant built entirely o
 
 | Role | Service |
 |---|---|
+| Document landing + dedup | S3 (`asklore-raw-uploads`) + S3 Event Notifications + DynamoDB (`asklore-file-hashes`) |
 | Document storage + trigger | S3 (`asklore-raw`) + S3 Event Notifications |
 | Ingestion orchestration | Bedrock Knowledge Base + Data Source (`asklore-kb`) |
 | Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
@@ -62,12 +63,16 @@ The build script (`scripts/build-and-deploy.sh`) cleans `build/`, copies each `l
 | Function | Trigger | Key logic |
 |---|---|---|
 | `kb-index-setup` | CloudFormation custom resource | Creates the AOSS vector index (`vector`/`text`/`metadata` fields) the Knowledge Base reads from — KB does not create it itself |
+| `dedup` | S3 ObjectCreated on `asklore-raw-uploads` | SHA-256-hashes content, conditionally writes to DynamoDB (`asklore-file-hashes`); new hash copies into `asklore-raw` under the same key, duplicate hash deletes from the landing bucket; `.metadata.json` sidecars pass through unhashed |
 | `ingestion-trigger` | S3 ObjectCreated on `asklore-raw` | Calls Bedrock `StartIngestionJob`; swallows `ConflictException` since only one ingestion job can run per data source at a time |
 | `retrieval` | API Gateway `POST /query` | Calls Bedrock `RetrieveAndGenerate` against the Knowledge Base; returns only sources present in the response `citations[]` |
 
 ## S3 Layout
 
 ```
+asklore-raw-uploads-<account>-<region>/
+└── <domain>/       # transient landing zone, deduped by DedupLambda
+
 asklore-raw-<account>-<region>/
 ├── infra-runbooks/
 ├── incident-postmortems/
@@ -86,7 +91,7 @@ asklore-eval-<account>-<region>/
 - **Embedding model:** Cohere Embed English v3 (1024-dim), invoked internally by the Knowledge Base during data-source sync — no Lambda calls `InvokeModel` for embeddings directly anymore.
 - **Generation model:** Cohere Command R+, invoked via `RetrieveAndGenerate`'s `modelArn` — not a direct `InvokeModel` call with a custom `documents[]`/`preamble` payload. Response `citations[].retrievedReferences[]` map back to S3 URIs; sources returned are only chunks actually cited.
 - **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you.
-- **Dedup:** Handled automatically by Knowledge Base data-source sync tracking.
+- **Dedup:** Explicit content-addressed dedup — `DedupLambda` SHA-256-hashes every object landing in `asklore-raw-uploads`, conditionally writes `{file_hash, filename, domain, upload_date, s3_path}` to DynamoDB (`asklore-file-hashes`) via a conditional `PutItem`, and only copies genuinely new content into `asklore-raw` (duplicates are deleted from the landing bucket, never reaching the Knowledge Base data source). Knowledge Base data-source sync's own object-level change tracking still runs on top of this as a secondary backstop, not the primary dedup mechanism.
 - **Retrieval:** `RetrieveAndGenerate`'s built-in vector search covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
 - **Access control (Phase 6):** Still planned — would use Knowledge Base metadata filtering (via `.metadata.json` S3 sidecar files) rather than the OpenSearch-layer filter originally envisioned.
 
@@ -95,7 +100,7 @@ asklore-eval-<account>-<region>/
 Detailed progress tracked in `AskLore_Implementation_Plan.md`.
 
 - **Phase 1** — Foundation MVP: single domain, end-to-end query with citations via Bedrock Knowledge Base + `RetrieveAndGenerate`
-- **Phase 2** — Multi-domain ingestion; dedup is automatic via Knowledge Base sync
+- **Phase 2** — Multi-domain ingestion; explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion
 - **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by `RetrieveAndGenerate`)
 - **Phase 4** — Bedrock Guardrails, grounded prompts, groundedness scoring (Claude-as-judge)
 - **Phase 5** — RAGAS evaluation suite, golden dataset, CI regression gate

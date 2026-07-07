@@ -5,6 +5,8 @@
 **Core stack:** Amazon Bedrock (Knowledge Base, Embeddings, Guardrails), OpenSearch Serverless, Lambda, CloudFormation
 
 > **Migration note:** Phase 1's original custom `ChunkingLambda` + `EmbeddingLambda` + manual kNN/Command R+ pipeline has been replaced by an `AWS::Bedrock::KnowledgeBase` (managed chunking, embedding, and OpenSearch indexing) plus `RetrieveAndGenerate` for the query path. Steps 1.4–1.7 below are rewritten to reflect this; several Phase 2/3 items are now provided natively by the Knowledge Base rather than requiring custom code — see the inline notes.
+>
+> **Second migration layer:** explicit content-hash dedup (SHA-256 + DynamoDB) now runs ahead of the Knowledge Base's `asklore-raw` data source, via a new `asklore-raw-uploads` landing bucket and `DedupLambda` (Step 2.3). This supersedes the "Knowledge Base sync handles dedup automatically" assumption the original Step 2.3 made — that assumption only holds for unchanged-object tracking on a fixed key, not for identical content re-uploaded under a new filename. KB data-source sync's own object-tracking still runs; it's now a secondary backstop, not the primary dedup mechanism.
 
 ---
 
@@ -27,6 +29,10 @@
 - [x] Provision `asklore-raw` S3 bucket (versioning enabled)
 - [x] Provision OpenSearch Serverless collection (vector search type), reused as the Knowledge Base's vector store
 - [x] Create IAM roles: `KnowledgeBaseRole`, `AossKbIndexLambdaRole`, `IngestionTriggerLambdaRole`, `RetrievalLambdaRole`
+- [x] Provision `asklore-raw-uploads` S3 bucket (no versioning — transient landing zone, see Step 2.3)
+- [x] Provision `asklore-file-hashes` DynamoDB table (on-demand billing, PK `file_hash`)
+- [x] Create IAM role `DedupLambdaRole`
+- [x] Deploy `DedupLambda` + matching `AWS::Logs::LogGroup`
 - [ ] Deploy stack, verify resources in console
 
 ### Step 1.2 — Seed Data (Domain 1: Infra Runbooks)
@@ -68,14 +74,19 @@ No longer a separate step: embedding happens internally during Knowledge Base da
 - [ ] Write seed docs for `incident-postmortems/` (5–10 postmortem docs)
 - [ ] Write seed docs for `product-docs/` (10–15 docs)
 - [ ] Write seed docs for `onboarding-wiki/` (10–15 docs)
-- [ ] Upload each to its respective `s3://asklore-raw/<domain>/` prefix
+- [ ] Upload each to its respective `s3://asklore-raw-uploads/<domain>/` prefix — once Step 2.3 ships, `DedupLambda` copies deduped content into `asklore-raw/<domain>/` automatically; already-uploaded Phase 1 seed content in `asklore-raw/infra-runbooks/` does not need to be re-uploaded
 
 ### Step 2.2 — Unified Metadata Schema
 - [ ] Attach `<file>.metadata.json` sidecars in S3 (Knowledge Base convention) tagging `{domain, doc_type, author, created_date, last_updated}` — domain is no longer auto-derived by a custom chunking Lambda, so this must be written explicitly per upload
 - [ ] Confirm Knowledge Base ingestion picks up the sidecar metadata as filterable attributes
 
-### Step 2.3 — Change Detection / Dedup — superseded by Knowledge Base sync
-Knowledge Base data-source sync tracks previously-ingested objects itself. Nothing to build here.
+### Step 2.3 — Content-Hash Deduplication
+Explicit dedup ahead of Knowledge Base ingestion, catching identical content re-uploaded under a different filename or key — something KB data-source sync's own unchanged-object tracking does not catch (infra provisioned in Step 1.1):
+- [x] `DedupLambda`: SHA-256-hash each object landing in `asklore-raw-uploads`, conditionally write `{file_hash, filename, domain, upload_date, s3_path}` to `asklore-file-hashes` (DynamoDB) via a conditional `PutItem` (`attribute_not_exists(file_hash)`) to avoid a check-then-act race between near-simultaneous identical uploads
+- [x] New hash → copy into `asklore-raw` under the same key/domain prefix (fires the existing `IngestionTriggerLambda` unmodified via the copy's `ObjectCreated:Copy` event); duplicate hash → delete from the landing bucket, no ingestion triggered
+- [x] `.metadata.json` sidecars pass through unhashed (KB metadata-filter convention — a sidecar must exist alongside its document regardless of content)
+- [x] Unit tests in `tests/unit/dedup/test_handler.py`
+- [ ] Manual verification: upload the same file twice (different filenames) to `asklore-raw-uploads`, confirm exactly one copy lands in `asklore-raw` and one ingestion job fires
 
 ### Step 2.4 — Seed Conflicting/Recency Test Cases
 - [ ] Deliberately create 2–3 pairs of documents on the same topic with different `last_updated` dates (one stale, one fresh) — to be used in Phase 3 recency testing
@@ -192,11 +203,12 @@ Knowledge Base data-source sync tracks previously-ingested objects itself. Nothi
 
 | Function | Service |
 |---|---|
-| Document storage/trigger | S3 + S3 Event Notifications |
+| Document landing/dedup | S3 (`asklore-raw-uploads`) + S3 Event Notifications + DynamoDB (`asklore-file-hashes`) |
+| Document storage/trigger | S3 (`asklore-raw`) + S3 Event Notifications |
 | Ingestion orchestration | Bedrock Knowledge Base + Data Source |
 | Vector search | OpenSearch Serverless (managed by the Knowledge Base) |
 | Embeddings & generation | Bedrock (Cohere Embed English v3, Cohere Command R+ via `RetrieveAndGenerate`) |
-| Change detection | Knowledge Base data-source sync (built-in) |
+| Change detection | Explicit SHA-256 hash Lambda (`DedupLambda`) + DynamoDB (`asklore-file-hashes`); Knowledge Base data-source sync remains a secondary backstop |
 | Metadata/cache/trace store | DynamoDB (Phase 3+ conversation state, Phase 4 groundedness scores) |
 | IaC | CloudFormation |
 | CI/CD + eval gating | CodePipeline + CodeBuild |
@@ -209,6 +221,11 @@ Knowledge Base data-source sync tracks previously-ingested objects itself. Nothi
 ## S3 Bucket Layout Reference
 
 ```
+s3://asklore-raw-uploads/
+└── <domain>/       # transient landing zone — DedupLambda copies new content
+                     # into asklore-raw and deletes the landing copy within
+                     # the same invocation (duplicates never leave this bucket)
+
 s3://asklore-raw/
 ├── infra-runbooks/
 ├── incident-postmortems/
@@ -226,4 +243,4 @@ s3://asklore-eval/
 
 ## Suggested Next Action
 
-Deploy the migrated stack (`make validate && make build-deploy`), upload a seed doc, confirm the Knowledge Base ingestion job reaches `COMPLETE`, then run the end-to-end curl test against the API to close out Steps 1.4 and 1.6. Then move on to **Phase 2, Step 2.1** — seed content for the remaining three domains.
+Deploy the migrated stack (`make validate && make build-deploy`), upload a seed doc, confirm the Knowledge Base ingestion job reaches `COMPLETE`, then run the end-to-end curl test against the API to close out Steps 1.4 and 1.6. Then close out Step 2.3's manual verification: upload the same file twice (different filenames) to `asklore-raw-uploads`, confirm via CloudWatch Logs (`/aws/lambda/asklore-dedup`) that only the first copy lands in `asklore-raw` and triggers ingestion, and confirm the second is deleted from the landing bucket with a matching item in `asklore-file-hashes`. Then move on to **Phase 2, Step 2.1** — seed content for the remaining three domains.

@@ -154,6 +154,56 @@ Resources:
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
 
+  DedupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: DedupLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DedupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub "arn:aws:s3:::asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}/*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !GetAtt FileHashesTable.Arn
+
+  # ── DynamoDB Tables ─────────────────────────────────────────────────────────
+
+  FileHashesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: asklore-file-hashes
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: file_hash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: file_hash
+          KeyType: HASH
+
   # ── OpenSearch Serverless ───────────────────────────────────────────────────
   # Encryption and network policies must exist before the collection is created.
 
@@ -232,6 +282,28 @@ Resources:
     Properties:
       ServiceToken: !GetAtt AossKbIndexFunction.Arn
 
+  DedupLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: asklore-dedup
+      Description: "Hashes uploaded objects, dedups against DynamoDB, copies new content into asklore-raw under its domain prefix"
+      Runtime: python3.12
+      Handler: handler.handler
+      Code: build/dedup
+      Role: !GetAtt DedupLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Environment:
+        Variables:
+          FILE_HASHES_TABLE: !Ref FileHashesTable
+          CLEAN_BUCKET: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+
+  DedupLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${DedupLambda}"
+      RetentionInDays: 30
+
   IngestionTriggerLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -307,9 +379,9 @@ Resources:
       DataSourceConfiguration:
         Type: S3
         S3Configuration:
-          # String-built, not !GetAtt RawBucket.Arn — RawBucket depends (transitively, via
+          # String-built, not !GetAtt CleanBucket.Arn — CleanBucket depends (transitively, via
           # IngestionTriggerLambda's env vars) on this resource's DataSourceId, so a direct
-          # reference back to RawBucket would create a circular dependency.
+          # reference back to CleanBucket would create a circular dependency.
           BucketArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
       VectorIngestionConfiguration:
         ChunkingConfiguration:
@@ -330,6 +402,14 @@ Resources:
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
 
+  DedupLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DedupLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+
   RetrievalApiPermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -342,7 +422,10 @@ Resources:
   # Buckets are created after Lambda Permissions so S3 can verify invocation
   # rights when registering the notification configuration.
 
-  RawBucket:
+  # Physical bucket name is still "asklore-raw" (predates the dedup pipeline) —
+  # this is the KB's ingestion source, populated by DedupLambda copying deduped
+  # content in from RawUploadsBucket.
+  CleanBucket:
     Type: AWS::S3::Bucket
     DependsOn:
       - IngestionTriggerLambdaPermission
@@ -359,6 +442,25 @@ Resources:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
             Function: !GetAtt IngestionTriggerLambda.Arn
+
+  # No VersioningConfiguration: this is a transient landing zone — DedupLambda
+  # copies or deletes every object within the same invocation, so there is
+  # never a prior version worth preserving.
+  RawUploadsBucket:
+    Type: AWS::S3::Bucket
+    DependsOn:
+      - DedupLambdaPermission
+    Properties:
+      BucketName: !Sub "asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt DedupLambda.Arn
 
   EvalBucket:
     Type: AWS::S3::Bucket
@@ -417,9 +519,17 @@ Resources:
 # ── Outputs ─────────────────────────────────────────────────────────────────────
 
 Outputs:
-  RawBucketName:
-    Description: "Drop source documents here — ingested by the Knowledge Base's S3 data source"
+  CleanBucketName:
+    Description: "Ingested by the Knowledge Base's S3 data source — populated by DedupLambda copying deduped content from asklore-raw-uploads"
     Value: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+
+  RawUploadsBucketName:
+    Description: "Drop new source documents here — DedupLambda copies new content into asklore-raw and deletes duplicates"
+    Value: !Sub "asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+
+  FileHashesTableName:
+    Description: "DynamoDB table tracking ingested content hashes for dedup"
+    Value: !Ref FileHashesTable
 
   EvalBucketName:
     Description: "Golden Q&A dataset (Phase 5)"
