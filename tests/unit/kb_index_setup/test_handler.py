@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-from opensearchpy.exceptions import RequestError
+from opensearchpy.exceptions import AuthorizationException, RequestError
 
 from tests.conftest import load_handler
 
@@ -10,7 +10,9 @@ from tests.conftest import load_handler
 def handler_module(monkeypatch):
     monkeypatch.setenv("OPENSEARCH_ENDPOINT", "https://example.us-east-1.aoss.amazonaws.com")
     monkeypatch.setenv("INDEX_NAME", "asklore-kb-index")
-    return load_handler("kb-index-setup")
+    module = load_handler("kb-index-setup")
+    monkeypatch.setattr(module.time, "sleep", MagicMock())
+    return module
 
 
 def _cfn_event(request_type: str) -> dict:
@@ -34,6 +36,7 @@ def test_ensure_index_creates_when_missing(handler_module):
     body = kwargs["body"]
     assert body["mappings"]["properties"]["vector"]["dimension"] == 1024
     assert set(body["mappings"]["properties"]) == {"vector", "text", "metadata"}
+    handler_module.time.sleep.assert_called_once_with(handler_module.INDEX_SETTLE_SECONDS)
 
 
 def test_ensure_index_skips_when_present(handler_module):
@@ -43,6 +46,7 @@ def test_ensure_index_skips_when_present(handler_module):
     handler_module.ensure_index(client)
 
     client.indices.create.assert_not_called()
+    handler_module.time.sleep.assert_not_called()
 
 
 def test_ensure_index_swallows_already_exists_race(handler_module):
@@ -53,6 +57,30 @@ def test_ensure_index_swallows_already_exists_race(handler_module):
     )
 
     handler_module.ensure_index(client)  # must not raise
+
+
+def _authz_error() -> AuthorizationException:
+    return AuthorizationException(403, "security_exception", {})
+
+
+def test_ensure_index_retries_through_authorization_propagation_delay(handler_module):
+    client = MagicMock()
+    client.indices.exists.side_effect = [_authz_error(), _authz_error(), False]
+
+    handler_module.ensure_index(client)
+
+    assert client.indices.exists.call_count == 3
+    client.indices.create.assert_called_once()
+
+
+def test_ensure_index_raises_after_exhausting_authorization_retries(handler_module):
+    client = MagicMock()
+    client.indices.exists.side_effect = _authz_error()
+
+    with pytest.raises(AuthorizationException):
+        handler_module.ensure_index(client)
+
+    assert client.indices.exists.call_count == handler_module.AUTHORIZATION_PROPAGATION_MAX_ATTEMPTS
 
 
 @patch("urllib.request.urlopen")

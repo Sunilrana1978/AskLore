@@ -275,10 +275,15 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${AossKbIndexFunction}"
       RetentionInDays: 30
 
+  # Must wait on AossKbIndexFunctionLogGroup too, not just AossAccessPolicy:
+  # invoking the Lambda here before CloudFormation creates its explicit log
+  # group lets Lambda auto-create an untracked one on first execution, which
+  # then collides with AossKbIndexFunctionLogGroup's own CREATE.
   AossKbIndex:
     Type: AWS::CloudFormation::CustomResource
     DependsOn:
       - AossAccessPolicy
+      - AossKbIndexFunctionLogGroup
     Properties:
       ServiceToken: !GetAtt AossKbIndexFunction.Arn
 
