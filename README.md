@@ -102,25 +102,39 @@ uv pip install boto3
 
 ## Deploy
 
-**Prerequisites:** Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access).
+**Prerequisites:**
+- [`uv`](https://github.com/astral-sh/uv) and AWS CLI v2 installed, with credentials configured (`aws sts get-caller-identity` should succeed)
+- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access)
 
 ```bash
 # One-time: create an S3 bucket for CloudFormation artifacts
 aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)
 
-# Build Lambda packages, package template, and deploy (all in one)
-bash scripts/build-and-deploy.sh
+# 1. Validate the template before touching AWS
+make validate
 
-# View outputs (bucket names, AOSS endpoint, API URL)
-aws cloudformation describe-stacks \
-  --stack-name asklore-stack \
-  --query "Stacks[0].Outputs" --output table
+# 2. Build Lambda packages, package the template, and deploy (all in one)
+make build-deploy
 ```
 
-Build flags:
+`make build-deploy` wraps `scripts/build-and-deploy.sh`, which cleans `build/`, copies each `lambda/*/handler.py`, installs `requirements.txt` deps via `uv pip install --target`, then runs `cloudformation package` + `deploy`. It passes `AossAdminPrincipalArn` (the OpenSearch Serverless data-access principal used for manual debugging) automatically as your current caller identity — override it with `AOSS_ADMIN_PRINCIPAL_ARN=arn:aws:iam::<account>:user/<you> make build-deploy` if you want a different principal.
+
+To target a non-default stack name:
+```bash
+STACK_NAME=asklore-dev make build-deploy
+```
+
+Build/deploy independently (skip the other half):
 ```bash
 bash scripts/build-and-deploy.sh --build    # build only, skip deploy
 bash scripts/build-and-deploy.sh --deploy   # deploy only (assumes build/ exists)
+```
+
+View stack outputs (bucket names, AOSS endpoint, API URL) any time:
+```bash
+aws cloudformation describe-stacks \
+  --stack-name asklore-stack \
+  --query "Stacks[0].Outputs" --output table
 ```
 
 ## Ingest documents
@@ -160,6 +174,52 @@ Response:
 ```
 
 Command R+ returns `citations[]` that reference the exact documents used — `sources` in the response contains only chunks the model actually cited, not all retrieved candidates.
+
+## Validate a fresh deployment
+
+After `make build-deploy` and seeding the runbooks (see [Ingest documents](#ingest-documents)), wait for the ingestion job to reach `COMPLETE`:
+
+```bash
+aws bedrock-agent list-ingestion-jobs \
+  --knowledge-base-id <KnowledgeBaseId from stack outputs> \
+  --data-source-id <DataSourceId — see Bedrock console, Knowledge Bases → asklore-kb → Data source>
+```
+
+Then run these sample prompts against `POST /query` — each one maps to a specific seed runbook, so a correct `sources` entry confirms retrieval, chunking, and generation are all wired correctly end to end:
+
+```bash
+API_URL=<ApiUrl from stack outputs>
+
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "How do I rotate an SSL certificate?"}' | jq
+# expect sources: infra-runbooks/ssl-cert-rotation.md
+
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "What are the steps to fail over the database?"}' | jq
+# expect sources: infra-runbooks/database-failover.md
+
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "The payment service is down, how do I restart it?"}' | jq
+# expect sources: infra-runbooks/payment-service-restart.md
+
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "Who is on call and how do I escalate an incident?"}' | jq
+# expect sources: infra-runbooks/on-call-escalation.md and/or infra-runbooks/incident-response-checklist.md
+
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "How do I flush the Redis cache safely?"}' | jq
+# expect sources: infra-runbooks/redis-cache-flush.md
+```
+
+**Grounding check (should NOT return a confident, cited answer):**
+```bash
+curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
+  -d '{"query": "What is the company'\''s parental leave policy?"}' | jq
+# no seed runbook covers this — sources should be empty/near-empty, and the
+# answer should not confidently state a policy that isn't grounded in a source
+```
+
+If `sources` comes back empty for the on-topic prompts, the ingestion job likely hasn't completed yet (`asklore-kb` sync is still running or `ConflictException`'d — see [Ingest documents](#ingest-documents)).
 
 ## Implementation phases
 
