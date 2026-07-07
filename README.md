@@ -16,6 +16,7 @@ flowchart TB
     classDef os      fill:#EDE9FE,stroke:#5B21B6,color:#1C1917,font-weight:bold
     classDef person  fill:#E0F2FE,stroke:#0369A1,color:#1C1917
     classDef output  fill:#F0FDF4,stroke:#15803D,color:#1C1917,font-weight:bold
+    classDef note    fill:#FFF7ED,stroke:#EA580C,color:#7C2D12,font-style:italic
 
     subgraph ING["📥  Ingestion Pipeline"]
         direction LR
@@ -23,7 +24,9 @@ flowchart TB
         RAWB["① S3  asklore-raw"]:::s3
         TRIG["② IngestionTriggerLambda"]:::lambda
         KB["③ Bedrock Knowledge Base  (FIXED_SIZE chunking + Cohere Embed v3)"]:::bedrock
+        DEDUP["⚡ Dedup: auto via KB sync tracking — no DynamoDB"]:::note
         UADM -->|.md / .pdf| RAWB -->|S3 Event| TRIG -->|StartIngestionJob| KB
+        KB -.-> DEDUP
     end
 
     subgraph QRY["🔍  Query Pipeline"]
