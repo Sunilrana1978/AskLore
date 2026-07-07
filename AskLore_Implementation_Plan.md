@@ -10,7 +10,7 @@
 
 ## 0. Prerequisites
 
-- [x] AWS account with Bedrock model access enabled (Cohere Embed English v3, Amazon Nova Pro, Rerank)
+- [x] AWS account with Bedrock model access enabled (Cohere Embed English v3, Cohere Command R+)
 - [x] AWS CLI configured with sufficient IAM permissions (S3, Lambda, OpenSearch, Bedrock, DynamoDB, CloudFormation)
 - [x] CloudFormation toolchain set up locally (raw YAML, not CDK)
 - [x] Decided: raw CloudFormation YAML (`template.yaml` at repo root)
@@ -50,7 +50,7 @@ No longer a separate step: embedding happens internally during Knowledge Base da
 ### Step 1.6 — Retrieval + Generation via RetrieveAndGenerate ✅
 - [x] `RetrievalLambda`: accept query → call `bedrock-agent-runtime:RetrieveAndGenerate` with `knowledgeBaseId` + `modelArn` (Cohere Command R+) — one call replaces the old embed-query/kNN-search/generate three-step sequence
 - [x] Return `{answer, sources: [{doc_title, source_key}]}`, built from `citations[].retrievedReferences[]`
-- [ ] Confirm end-to-end answer with citation against a deployed stack; verify Command R+ is accepted as a `RetrieveAndGenerate` `modelArn` (fall back to `us.amazon.nova-pro-v1:0` if rejected)
+- [ ] Confirm end-to-end answer with citation against a deployed stack
 
 ### Step 1.7 — Minimal API
 - [x] API Gateway REST endpoint (`POST /query`) → RetrievalLambda
@@ -84,7 +84,7 @@ Knowledge Base data-source sync tracks previously-ingested objects itself. Nothi
 
 ---
 
-## Phase 3 — Two-Tier Routing & Hybrid Search
+## Phase 3 — Domain Routing, Recency & Multi-Turn
 **Timeline: Weeks 5–6**
 **Goal:** Accurate, domain-aware, recency-aware retrieval.
 
@@ -164,7 +164,7 @@ Knowledge Base data-source sync tracks previously-ingested objects itself. Nothi
 **Goal:** Operable, monitorable, cost-aware system.
 
 ### Step 6.1 — Tracing
-- [ ] Enable X-Ray across all Lambdas in the request chain (router → retrieval → rerank → generation)
+- [ ] Enable X-Ray across all Lambdas in the request chain (router → retrieval → generation)
 
 ### Step 6.2 — Dashboards
 - [ ] Build CloudWatch dashboard: latency per stage, error rates, OpenSearch OCU usage, Bedrock token consumption
@@ -177,8 +177,8 @@ Knowledge Base data-source sync tracks previously-ingested objects itself. Nothi
 - [ ] Configure API Gateway usage plans and throttling per API key/user
 
 ### Step 6.5 — Simulated Access Control
-- [ ] Tag a subset of documents (e.g., under `onboarding-wiki/hr-sensitive/`) as restricted
-- [ ] Pass a mock user role in the API request; enforce filtering at the OpenSearch query layer (not just UI)
+- [ ] Tag a subset of documents (e.g., under `onboarding-wiki/hr-sensitive/`) as restricted via `.metadata.json` sidecar files
+- [ ] Pass a mock user role in the API request; enforce filtering via Knowledge Base metadata filters in the `RetrieveAndGenerate` call
 
 ### Step 6.6 — Cost Monitoring
 - [ ] Set up AWS Budgets with alerts on Bedrock + OpenSearch Serverless spend
