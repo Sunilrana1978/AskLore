@@ -86,7 +86,7 @@ asklore-eval-<account>-<region>/
 - **Embedding model:** Cohere Embed English v3 (1024-dim), invoked internally by the Knowledge Base during data-source sync — no Lambda calls `InvokeModel` for embeddings directly anymore.
 - **Generation model:** Cohere Command R+, invoked via `RetrieveAndGenerate`'s `modelArn` — not a direct `InvokeModel` call with a custom `documents[]`/`preamble` payload. Response `citations[].retrievedReferences[]` map back to S3 URIs; sources returned are only chunks actually cited.
 - **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you.
-- **Dedup:** Handled automatically by Knowledge Base data-source sync tracking, not a custom DynamoDB `DocumentHashes` table.
+- **Dedup:** Handled automatically by Knowledge Base data-source sync tracking.
 - **Retrieval:** `RetrieveAndGenerate`'s built-in vector search covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
 - **Access control (Phase 6):** Still planned — would use Knowledge Base metadata filtering (via `.metadata.json` S3 sidecar files) rather than the OpenSearch-layer filter originally envisioned.
 
@@ -95,7 +95,7 @@ asklore-eval-<account>-<region>/
 Detailed progress tracked in `AskLore_Implementation_Plan.md`.
 
 - **Phase 1** — Foundation MVP: single domain, end-to-end query with citations via Bedrock Knowledge Base + `RetrieveAndGenerate`
-- **Phase 2** — Multi-domain ingestion; dedup is now automatic via Knowledge Base sync (no custom DynamoDB table needed)
+- **Phase 2** — Multi-domain ingestion; dedup is automatic via Knowledge Base sync
 - **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by `RetrieveAndGenerate`)
 - **Phase 4** — Bedrock Guardrails, grounded prompts, groundedness scoring (Claude-as-judge)
 - **Phase 5** — RAGAS evaluation suite, golden dataset, CI regression gate

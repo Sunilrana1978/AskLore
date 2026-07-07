@@ -75,7 +75,7 @@ No longer a separate step: embedding happens internally during Knowledge Base da
 - [ ] Confirm Knowledge Base ingestion picks up the sidecar metadata as filterable attributes
 
 ### Step 2.3 — Change Detection / Dedup — superseded by Knowledge Base sync
-Knowledge Base data-source sync tracks previously-ingested objects itself; a custom DynamoDB `DocumentHashes` table and content-hash comparison are no longer needed. Nothing to build here.
+Knowledge Base data-source sync tracks previously-ingested objects itself. Nothing to build here.
 
 ### Step 2.4 — Seed Conflicting/Recency Test Cases
 - [ ] Deliberately create 2–3 pairs of documents on the same topic with different `last_updated` dates (one stale, one fresh) — to be used in Phase 3 recency testing

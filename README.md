@@ -24,7 +24,7 @@ flowchart TB
         RAWB["① S3  asklore-raw"]:::s3
         TRIG["② IngestionTriggerLambda"]:::lambda
         KB["③ Bedrock Knowledge Base  (FIXED_SIZE chunking + Cohere Embed v3)"]:::bedrock
-        DEDUP["⚡ Dedup: handled automatically by Knowledge Base data-source sync tracking — no custom DynamoDB DocumentHashes table"]:::note
+        DEDUP["⚡ Dedup: handled automatically by Knowledge Base data-source sync tracking"]:::note
         UADM -->|.md / .pdf| RAWB -->|S3 Event| TRIG -->|StartIngestionJob| KB
         KB -.-> DEDUP
     end
