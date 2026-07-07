@@ -1,5 +1,4 @@
 """
-Step 1.6 — RetrievalLambda
 Invoked by API Gateway POST /query.
 Calls Bedrock's RetrieveAndGenerate against the Knowledge Base: it embeds the
 query, runs vector search over the Knowledge Base's OpenSearch Serverless
