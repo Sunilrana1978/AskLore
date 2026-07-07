@@ -87,55 +87,39 @@ seed-data/
 
 Lambda source dirs contain only `handler.py` + `requirements.txt`. Installed packages are generated into `build/` by `scripts/build-and-deploy.sh` and gitignored.
 
-## Local setup
-
-Requires [uv](https://github.com/astral-sh/uv) and AWS CLI v2.
-
-```bash
-# Create project venv (Python 3.12, matches Lambda runtime)
-uv venv .venv --python 3.12
-source .venv/bin/activate
-
-# Install local tooling (boto3 for stack-output lookups)
-uv pip install boto3
-```
-
 ## Deploy
 
 **Prerequisites:**
-- [`uv`](https://github.com/astral-sh/uv) and AWS CLI v2 installed, with credentials configured (`aws sts get-caller-identity` should succeed)
+- [`uv`](https://github.com/astral-sh/uv) and AWS CLI v2, with credentials configured (`aws sts get-caller-identity` succeeds)
 - Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access)
 
 ```bash
-# One-time: create an S3 bucket for CloudFormation artifacts
-aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)
-
-# 1. Validate the template before touching AWS
+aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)  # one-time
 make validate
-
-# 2. Build Lambda packages, package the template, and deploy (all in one)
 make build-deploy
 ```
 
-`make build-deploy` wraps `scripts/build-and-deploy.sh`, which cleans `build/`, copies each `lambda/*/handler.py`, installs `requirements.txt` deps via `uv pip install --target`, then runs `cloudformation package` + `deploy`. It passes `AossAdminPrincipalArn` (the OpenSearch Serverless data-access principal used for manual debugging) automatically as your current caller identity — override it with `AOSS_ADMIN_PRINCIPAL_ARN=arn:aws:iam::<account>:user/<you> make build-deploy` if you want a different principal.
-
-To target a non-default stack name:
+That's it — `make build-deploy` builds the Lambda packages, packages the template, and deploys the stack in one step. View outputs (bucket names, AOSS endpoint, API URL) any time with:
 ```bash
-STACK_NAME=asklore-dev make build-deploy
+aws cloudformation describe-stacks --stack-name asklore-stack --query "Stacks[0].Outputs" --output table
 ```
 
-Build/deploy independently (skip the other half):
+<details>
+<summary>Advanced: non-default stack, custom AOSS admin, partial build/deploy</summary>
+
 ```bash
+# Target a non-default stack
+STACK_NAME=asklore-dev make build-deploy
+
+# Grant a different IAM principal direct AOSS data access (defaults to your own caller identity)
+AOSS_ADMIN_PRINCIPAL_ARN=arn:aws:iam::<account>:user/<you> make build-deploy
+
+# Build or deploy independently
 bash scripts/build-and-deploy.sh --build    # build only, skip deploy
 bash scripts/build-and-deploy.sh --deploy   # deploy only (assumes build/ exists)
 ```
 
-View stack outputs (bucket names, AOSS endpoint, API URL) any time:
-```bash
-aws cloudformation describe-stacks \
-  --stack-name asklore-stack \
-  --query "Stacks[0].Outputs" --output table
-```
+</details>
 
 ## Ingest documents
 
