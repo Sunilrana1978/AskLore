@@ -39,6 +39,8 @@ Chunking, embedding, and index management are owned by the Bedrock Knowledge Bas
 aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)
 
 # Full build + deploy (rebuilds build/ from lambda/*/; installs deps via uv)
+# AOSS_ADMIN_PRINCIPAL_ARN defaults to current caller — override for CI/CD roles:
+#   AOSS_ADMIN_PRINCIPAL_ARN=arn:aws:iam::123456789:role/MyRole bash scripts/build-and-deploy.sh
 bash scripts/build-and-deploy.sh
 
 # Build only (no deploy)
@@ -108,8 +110,8 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 ### Project Structure
 
 ```
-asklore/
-├── docs/                        # Planning docs, ADRs, architecture decisions
+./
+├── docs/                        # Planning docs, ADRs, architecture decisions (create when needed)
 ├── lambda/
 │   └── <function>/
 │       ├── handler.py           # Lambda entry point only
@@ -168,8 +170,8 @@ make build-deploy   # 2. Build packages + deploy stack
 ### Python Code Rules
 
 - **Python 3.12.** Type hints required on all function signatures.
-- **`ruff check lambda/ scripts/`** must pass before committing. Config is in `pyproject.toml`.
-- **No frozen credentials in module-level state.** `get_frozen_credentials()` snapshots credentials that expire after ~1 hour on warm Lambda containers. Rebuild auth objects per-invocation or use the live session credentials.
+- **`ruff check lambda/ scripts/`** must pass before committing. Config is in `pyproject.toml`. Auto-fix formatting with `uv run ruff format lambda/ scripts/`.
+- **No frozen credentials in module-level state.** `get_frozen_credentials()` at module load time snapshots credentials that expire after ~1 hour on warm Lambda containers. Calling it inside the handler function (per-invocation) is fine. `boto3.client()` at module level is also fine — the client refreshes credentials internally.
 - **No hardcoded strings** for account IDs, regions, endpoints, bucket names, or model IDs. Every external reference comes from `os.environ`.
 - **No comments explaining what the code does** — use descriptive names. Only add a comment when the *why* is non-obvious (a workaround, a hidden constraint, a subtle invariant).
 - **Handler signature:** every Lambda entry point is `def handler(event: dict, context) -> dict`.
@@ -179,5 +181,6 @@ make build-deploy   # 2. Build packages + deploy stack
 
 - Unit tests live in `tests/unit/<function>/test_<module>.py`.
 - Tests must not make real AWS calls — mock `boto3` clients at the boundary.
-- Run with: `make test`
-- When adding a new Lambda function, add at least one unit test for the core logic (chunking algorithm, response parsing, etc.) before considering the step complete.
+- Run all tests: `make test` | Run a single file: `uv run pytest tests/unit/<function>/test_handler.py -v` | Run one test: `uv run pytest -k <test_name> -v`
+- **`lambda` is a Python reserved keyword** — handlers cannot be imported with a normal `import`. Use `load_handler("<function-name>")` from `tests/conftest.py`, which loads the handler via `importlib` under a unique module name. See any existing test for the pattern.
+- When adding a new Lambda function, add at least one unit test for the core logic before considering the step complete.
