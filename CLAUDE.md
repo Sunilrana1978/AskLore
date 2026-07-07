@@ -8,24 +8,24 @@ AskLore is a greenfield internal tribal-knowledge RAG assistant built entirely o
 
 ## Architecture
 
-**Ingestion pipeline:** S3 upload (`asklore-raw`) → S3 Event → `ChunkingLambda` → `asklore-processed` → S3 Event → `EmbeddingLambda` → OpenSearch Serverless (`asklore-knowledge` index)
+**Ingestion pipeline:** S3 upload (`asklore-raw`) → S3 Event → `IngestionTriggerLambda` → Bedrock `StartIngestionJob` → Knowledge Base data source sync (KB-managed `FIXED_SIZE` chunking + Cohere Embed v3 embedding) → OpenSearch Serverless (`asklore-kb-index`)
 
-**Query pipeline:** `POST /query` → API Gateway → `RetrievalLambda` → Cohere Embed v3 (query vector) → OpenSearch kNN (top-5) → Cohere Command R+ (grounded generation with `documents[]`) → `{answer, sources}`
+**Query pipeline:** `POST /query` → API Gateway → `RetrievalLambda` → Bedrock `RetrieveAndGenerate` (KB vector search + Cohere Command R+ grounded generation in one call) → `{answer, sources}`
 
 **Key AWS services:**
 
 | Role | Service |
 |---|---|
 | Document storage + trigger | S3 (`asklore-raw`) + S3 Event Notifications |
-| Chunked output | S3 (`asklore-processed`) — `<domain>/<doc_id>/chunks.json` |
+| Ingestion orchestration | Bedrock Knowledge Base + Data Source (`asklore-kb`) |
 | Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
-| Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) |
-| Vector search | OpenSearch Serverless — VECTORSEARCH collection `asklore` |
+| Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) via `RetrieveAndGenerate` |
+| Vector search | OpenSearch Serverless — VECTORSEARCH collection `asklore`, index `asklore-kb-index` |
 | IaC | CloudFormation (`template.yaml` at repo root) — never CDK/SAM/Terraform |
 | Observability | CloudWatch + X-Ray (Phase 6) |
 | Guardrails | Bedrock Guardrails (Phase 4) |
 
-**Domain** is auto-derived from the first S3 prefix component (e.g. `infra-runbooks/` → domain `infra-runbooks`).
+Chunking, embedding, and index management are owned by the Bedrock Knowledge Base — there is no custom chunking Lambda or explicit `domain` metadata tagging in Phase 1. Domain-based filtering (if needed) would be reintroduced later via `.metadata.json` S3 sidecar files, not derived implicitly from the prefix.
 
 ## Build & Deploy
 
@@ -59,11 +59,9 @@ The build script (`scripts/build-and-deploy.sh`) cleans `build/`, copies each `l
 
 | Function | Trigger | Key logic |
 |---|---|---|
-| `ChunkingLambda` | S3 ObjectCreated on `asklore-raw` | Splits markdown by heading / PDF by page; MIN 80 chars, MAX 4000 chars per chunk; writes `chunks.json` to `asklore-processed` |
-| `EmbeddingLambda` | S3 ObjectCreated (`chunks.json`) on `asklore-processed` | Calls Cohere Embed v3 with `input_type=search_document`; bulk-indexes via AOSS `_bulk` API |
-| `RetrievalLambda` | API Gateway `POST /query` | Embeds query with `input_type=search_query`; kNN top-5; passes chunks as `documents[]` to Command R+; returns only actually-cited sources from `citations[]` |
-
-`EmbeddingLambdaInvokeConfig` sets `MaximumRetryAttempts: 0` — Lambda will not auto-retry on Bedrock throttle.
+| `kb-index-setup` | CloudFormation custom resource | Creates the AOSS vector index (`vector`/`text`/`metadata` fields) the Knowledge Base reads from — KB does not create it itself |
+| `ingestion-trigger` | S3 ObjectCreated on `asklore-raw` | Calls Bedrock `StartIngestionJob`; swallows `ConflictException` since only one ingestion job can run per data source at a time |
+| `retrieval` | API Gateway `POST /query` | Calls Bedrock `RetrieveAndGenerate` against the Knowledge Base; returns only sources present in the response `citations[]` |
 
 ## S3 Layout
 
@@ -75,9 +73,6 @@ asklore-raw-<account>-<region>/
 └── onboarding-wiki/
     └── hr-sensitive/       # Phase 6 access-control testing
 
-asklore-processed-<account>-<region>/
-└── <domain>/<doc_id>/chunks.json
-
 asklore-eval-<account>-<region>/
 └── golden-qa-dataset.json  # Phase 5
 ```
@@ -85,24 +80,24 @@ asklore-eval-<account>-<region>/
 ## Key Design Decisions
 
 - **IaC:** Raw CloudFormation YAML only (`template.yaml`). Never CDK, SAM, or Terraform.
-- **Chunking:** Split by heading/section boundary, not fixed character count. Metadata attached: `{source_key, domain, doc_title, upload_date}`.
-- **Embedding model:** Cohere Embed English v3 (`input_type` differs between indexing and retrieval — `search_document` vs `search_query`).
-- **Generation model:** Cohere Command R+ uses the native `documents[]` + `preamble` schema (not a `messages[]` schema like Claude/Nova). Its `citations[]` response maps `doc_0`, `doc_1`, … back to the input documents array — sources returned are only chunks actually cited.
-- **AOSS explicit IDs:** OpenSearch Serverless does not support explicit document IDs in single-document index calls; bulk-index auto-generates IDs. Idempotent upserts by `chunk_id` are deferred to Phase 2.
-- **Dedup (Phase 2):** Content hash on S3 event → compare against DynamoDB `DocumentHashes` → skip re-embedding if unchanged.
-- **Retrieval (Phase 3+):** top-20 hybrid search (kNN + BM25) → Bedrock Rerank → top-5 to generation.
-- **Access control (Phase 6):** Enforced at OpenSearch query layer via metadata filters on user role, not at the API/UI layer.
+- **Chunking:** Owned by the Bedrock Knowledge Base's `FIXED_SIZE` chunking strategy, not a custom heading-based Lambda. This trades the earlier heading-boundary design for far less code to maintain.
+- **Embedding model:** Cohere Embed English v3 (1024-dim), invoked internally by the Knowledge Base during data-source sync — no Lambda calls `InvokeModel` for embeddings directly anymore.
+- **Generation model:** Cohere Command R+, invoked via `RetrieveAndGenerate`'s `modelArn` — not a direct `InvokeModel` call with a custom `documents[]`/`preamble` payload. Response `citations[].retrievedReferences[]` map back to S3 URIs; sources returned are only chunks actually cited.
+- **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you.
+- **Dedup:** Handled automatically by Knowledge Base data-source sync tracking, not a custom DynamoDB `DocumentHashes` table.
+- **Retrieval:** `RetrieveAndGenerate`'s built-in vector search covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
+- **Access control (Phase 6):** Still planned — would use Knowledge Base metadata filtering (via `.metadata.json` S3 sidecar files) rather than the OpenSearch-layer filter originally envisioned.
 
 ## Implementation Phases
 
 Detailed progress tracked in `AskLore_Implementation_Plan.md`.
 
-- **Phase 1** — Foundation MVP: single domain, end-to-end query with citations (Steps 1.1–1.5 ✅; 1.6–1.7 pending Command R+ model access)
-- **Phase 2** — Multi-domain ingestion + hash-based dedup (DynamoDB)
-- **Phase 3** — Domain-classification router + hybrid search + Bedrock Rerank + recency weighting + multi-turn query rewriting
+- **Phase 1** — Foundation MVP: single domain, end-to-end query with citations via Bedrock Knowledge Base + `RetrieveAndGenerate`
+- **Phase 2** — Multi-domain ingestion; dedup is now automatic via Knowledge Base sync (no custom DynamoDB table needed)
+- **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by `RetrieveAndGenerate`)
 - **Phase 4** — Bedrock Guardrails, grounded prompts, groundedness scoring (Claude-as-judge)
 - **Phase 5** — RAGAS evaluation suite, golden dataset, CI regression gate
-- **Phase 6** — X-Ray tracing, CloudWatch dashboards, semantic cache, rate limiting, simulated RBAC, cost budgets
+- **Phase 6** — X-Ray tracing, CloudWatch dashboards, semantic cache, rate limiting, simulated RBAC (via KB metadata filtering), cost budgets
 
 ---
 

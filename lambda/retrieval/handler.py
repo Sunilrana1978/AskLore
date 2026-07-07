@@ -1,117 +1,53 @@
 """
 Step 1.6 — RetrievalLambda
 Invoked by API Gateway POST /query.
-Embeds the query, runs kNN search on OpenSearch Serverless (top-5),
-passes retrieved chunks to Cohere Command R+ via Bedrock, returns {answer, sources}.
-Command R+ accepts a documents[] array and returns citations[] that map directly
-back to those documents — sources in the response are only actually-cited docs.
+Calls Bedrock's RetrieveAndGenerate against the Knowledge Base: it embeds the
+query, runs vector search over the Knowledge Base's OpenSearch Serverless
+index, and generates a grounded answer in one call. citations[] map back to
+the S3 objects actually used — sources in the response are only those.
 """
 
 import json
 import os
 
 import boto3
-from opensearchpy import OpenSearch, RequestsHttpConnection
-from requests_aws4auth import AWS4Auth
 
-bedrock = boto3.client("bedrock-runtime")
+bedrock_agent_runtime = boto3.client("bedrock-agent-runtime")
 
-OPENSEARCH_ENDPOINT = os.environ["OPENSEARCH_ENDPOINT"]
-INDEX_NAME = os.environ["INDEX_NAME"]
-EMBEDDING_MODEL_ID = os.environ["EMBEDDING_MODEL_ID"]
-GENERATION_MODEL_ID = os.environ["GENERATION_MODEL_ID"]
-
-PREAMBLE = (
-    "You are AskLore, an internal knowledge assistant. "
-    "Answer ONLY using the provided documents. "
-    "If the documents are insufficient, say so explicitly. "
-    "Always cite the documents you used."
-)
-
-# ── OpenSearch client ─────────────────────────────────────────────────────────
-
-def get_os_client() -> OpenSearch:
-    # Credentials are fetched fresh each invocation — frozen creds expire after
-    # ~1 hour and would 403 on warm Lambda containers that live longer than that.
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    creds = boto3.session.Session().get_credentials().get_frozen_credentials()
-    auth = AWS4Auth(
-        creds.access_key,
-        creds.secret_key,
-        region,
-        "aoss",
-        session_token=creds.token,
-    )
-    host = OPENSEARCH_ENDPOINT.replace("https://", "").rstrip("/")
-    return OpenSearch(
-        hosts=[{"host": host, "port": 443}],
-        http_auth=auth,
-        use_ssl=True,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection,
-        timeout=30,
-    )
+KNOWLEDGE_BASE_ID = os.environ["KNOWLEDGE_BASE_ID"]
+GENERATION_MODEL_ARN = os.environ["GENERATION_MODEL_ARN"]
 
 
-# ── Core operations ───────────────────────────────────────────────────────────
-
-def embed(text: str) -> list[float]:
-    """Cohere Embed English v3 — input_type=search_query for retrieval."""
-    resp = bedrock.invoke_model(
-        modelId=EMBEDDING_MODEL_ID,
-        body=json.dumps({
-            "texts": [text[:2048]],
-            "input_type": "search_query",
-        }),
-    )
-    return json.loads(resp["body"].read())["embeddings"][0]
-
-
-def knn_search(vector: list[float], top_k: int = 5) -> list[dict]:
-    client = get_os_client()
-    resp = client.search(
-        index=INDEX_NAME,
-        body={
-            "size": top_k,
-            "query": {
-                "knn": {
-                    "vector": {
-                        "vector": vector,
-                        "k": top_k,
-                    }
-                }
+def retrieve_and_generate(query: str) -> tuple[str, list[dict]]:
+    resp = bedrock_agent_runtime.retrieve_and_generate(
+        input={"text": query},
+        retrieveAndGenerateConfiguration={
+            "type": "KNOWLEDGE_BASE",
+            "knowledgeBaseConfiguration": {
+                "knowledgeBaseId": KNOWLEDGE_BASE_ID,
+                "modelArn": GENERATION_MODEL_ARN,
+                "retrievalConfiguration": {
+                    "vectorSearchConfiguration": {"numberOfResults": 5}
+                },
             },
-            "_source": ["text", "doc_title", "source_key", "section_title", "domain", "chunk_id"],
         },
     )
-    hits = resp.get("hits", {}).get("hits", [])
-    return [hit["_source"] for hit in hits]
+    answer = resp["output"]["text"]
 
+    sources: list[dict] = []
+    seen_uris: set[str] = set()
+    for citation in resp.get("citations", []):
+        for ref in citation.get("retrievedReferences", []):
+            uri = ref.get("location", {}).get("s3Location", {}).get("uri")
+            if not uri or uri in seen_uris:
+                continue
+            seen_uris.add(uri)
+            sources.append({
+                "doc_title": uri.rsplit("/", 1)[-1],
+                "source_key": uri,
+            })
 
-def generate(query: str, chunks: list[dict]) -> tuple[str, list[int]]:
-    """Call Command R+ with grounded documents; return (answer, cited_chunk_indices)."""
-    documents = [
-        {"title": c.get("doc_title", "Unknown"), "snippet": c["text"]}
-        for c in chunks
-    ]
-    resp = bedrock.invoke_model(
-        modelId=GENERATION_MODEL_ID,
-        body=json.dumps({
-            "message": query,
-            "preamble": PREAMBLE,
-            "documents": documents,
-            "max_tokens": 1024,
-            "temperature": 0.1,
-        }),
-    )
-    body = json.loads(resp["body"].read())
-    # citations[].document_ids are strings like "doc_0", "doc_1", …
-    cited = {
-        int(doc_id.split("_")[1])
-        for citation in body.get("citations", [])
-        for doc_id in citation.get("document_ids", [])
-    }
-    return body["text"], sorted(cited)
+    return answer, sources
 
 
 def _resp(status: int, body: dict) -> dict:
@@ -122,7 +58,7 @@ def _resp(status: int, body: dict) -> dict:
     }
 
 
-def handler(event, context):
+def handler(event: dict, context) -> dict:
     try:
         body = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
@@ -132,15 +68,7 @@ def handler(event, context):
         return _resp(400, {"error": "query is required"})
 
     try:
-        vector = embed(query)
-        chunks = knn_search(vector)
-        if not chunks:
-            return _resp(200, {"answer": "No relevant documents found for your query.", "sources": []})
-        answer, cited_indices = generate(query, chunks)
-        sources = [
-            {"doc_title": chunks[i].get("doc_title"), "source_key": chunks[i].get("source_key")}
-            for i in cited_indices if i < len(chunks)
-        ]
+        answer, sources = retrieve_and_generate(query)
         return _resp(200, {"answer": answer, "sources": sources})
     except Exception as exc:
         print(f"Unhandled error: {exc}")

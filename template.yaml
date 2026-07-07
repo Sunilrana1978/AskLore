@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  AskLore Phase 1 — S3 ingestion pipeline (ChunkingLambda → EmbeddingLambda),
-  OpenSearch Serverless (VECTORSEARCH), RetrievalLambda, and API Gateway.
+  AskLore Phase 1 — S3 data source ingested by a Bedrock Knowledge Base
+  (OpenSearch Serverless VECTORSEARCH storage), RetrievalLambda calling
+  RetrieveAndGenerate, and API Gateway.
 
 # ── Deploy workflow ─────────────────────────────────────────────────────────────
 #
@@ -18,7 +19,8 @@ Description: >-
 #        aws cloudformation deploy \
 #          --template-file template-packaged.yaml \
 #          --stack-name asklore-stack \
-#          --capabilities CAPABILITY_NAMED_IAM
+#          --capabilities CAPABILITY_NAMED_IAM \
+#          --parameter-overrides AossAdminPrincipalArn=<your-iam-user-or-role-arn>
 #
 #   4. View outputs (bucket names, collection endpoint, API URL):
 #        aws cloudformation describe-stacks \
@@ -27,14 +29,57 @@ Description: >-
 #
 # ────────────────────────────────────────────────────────────────────────────────
 
+Parameters:
+  AossAdminPrincipalArn:
+    Type: String
+    Description: >-
+      IAM user/role ARN granted direct AOSS data-plane access to the asklore
+      index, for manual debugging via the OpenSearch dashboard. Pass your own
+      IAM ARN at deploy time, e.g.:
+        aws cloudformation deploy ... --parameter-overrides AossAdminPrincipalArn=arn:aws:iam::<account>:user/<you>
+
 Resources:
 
   # ── IAM Roles ──────────────────────────────────────────────────────────────
 
-  IngestionLambdaRole:
+  KnowledgeBaseRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: IngestionLambdaRole
+      RoleName: AskLoreKnowledgeBaseRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: KnowledgeBasePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
+              - Effect: Allow
+                Action:
+                  - aoss:APIAccessAll
+                Resource:
+                  - !Sub "arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
+
+  AossKbIndexLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: AossKbIndexLambdaRole
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -45,32 +90,39 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: IngestionPolicy
+        - PolicyName: AossKbIndexPolicy
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
-                  - s3:GetObject
-                Resource:
-                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                Resource:
-                  - !Sub "arn:aws:s3:::asklore-processed-${AWS::AccountId}-${AWS::Region}/*"
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
-              # IAM-level AOSS access; data-level ops governed by AossAccessPolicy below.
-              - Effect: Allow
-                Action:
                   - aoss:APIAccessAll
                 Resource:
                   - !Sub "arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*"
+
+  IngestionTriggerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IngestionTriggerLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: IngestionTriggerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:StartIngestionJob
+                Resource:
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${AskLoreKnowledgeBase}"
 
   RetrievalLambdaRole:
     Type: AWS::IAM::Role
@@ -92,15 +144,15 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - bedrock:InvokeModel
+                  - bedrock:Retrieve
+                  - bedrock:RetrieveAndGenerate
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${AskLoreKnowledgeBase}"
               - Effect: Allow
                 Action:
-                  - aoss:APIAccessAll
+                  - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/*"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
 
   # ── OpenSearch Serverless ───────────────────────────────────────────────────
   # Encryption and network policies must exist before the collection is created.
@@ -131,8 +183,12 @@ Resources:
       Name: asklore
       Type: VECTORSEARCH
 
-  # Grants Lambda roles index read/write access at the data layer.
+  # Grants Lambda/Bedrock roles index read/write access at the data layer.
   # The Principal ARNs are resolved via !Sub at deploy time.
+  # RetrievalLambdaRole is deliberately NOT a principal here: RetrievalLambda calls
+  # bedrock-agent-runtime:RetrieveAndGenerate, never OpenSearch directly. Adding it would
+  # also create a circular dependency (this policy -> RetrievalLambdaRole -> the KB ARN in
+  # its IAM policy -> AskLoreKnowledgeBase -> AossKbIndex -> this policy).
   AossAccessPolicy:
     Type: AWS::OpenSearchServerless::AccessPolicy
     DependsOn:
@@ -141,57 +197,68 @@ Resources:
       Name: asklore-access
       Type: data
       Policy: !Sub >-
-        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${IngestionLambdaRole.Arn}","${RetrievalLambdaRole.Arn}","arn:aws:iam::${AWS::AccountId}:user/sunil-admin"]}]
+        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${KnowledgeBaseRole.Arn}","${AossKbIndexLambdaRole.Arn}","${AossAdminPrincipalArn}"]}]
 
   # ── Lambda Functions ────────────────────────────────────────────────────────
   # Code paths are local directories; `aws cloudformation package` ZIPs and
   # uploads each one to S3 before deployment.
 
-  ChunkingLambda:
+  AossKbIndexFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: asklore-chunking
-      Description: "Step 1.4: parse S3 object, chunk by heading, write chunks.json to asklore-processed"
+      FunctionName: asklore-kb-index-setup
+      Description: "CloudFormation custom resource: creates the AOSS vector index the Knowledge Base reads from"
       Runtime: python3.12
       Handler: handler.handler
-      Code: build/chunking
-      Role: !GetAtt IngestionLambdaRole.Arn
-      Timeout: 300
-      MemorySize: 512
-      Environment:
-        Variables:
-          PROCESSED_BUCKET: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
-
-  EmbeddingLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: asklore-embedding
-      Description: "Step 1.5: read chunks.json, call Bedrock Cohere Embed v3, index into OpenSearch"
-      Runtime: python3.12
-      Handler: handler.handler
-      Code: build/embedding
-      Role: !GetAtt IngestionLambdaRole.Arn
-      Timeout: 900
-      MemorySize: 512
+      Code: build/kb-index-setup
+      Role: !GetAtt AossKbIndexLambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
-          INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: cohere.embed-english-v3
+          INDEX_NAME: asklore-kb-index
 
-  EmbeddingLambdaInvokeConfig:
-    Type: AWS::Lambda::EventInvokeConfig
+  AossKbIndexFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      FunctionName: !Ref EmbeddingLambda
-      Qualifier: $LATEST
-      # No auto-retries — a timeout means Bedrock is throttled; retrying immediately makes it worse.
-      MaximumRetryAttempts: 0
+      LogGroupName: !Sub "/aws/lambda/${AossKbIndexFunction}"
+      RetentionInDays: 30
+
+  AossKbIndex:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - AossAccessPolicy
+    Properties:
+      ServiceToken: !GetAtt AossKbIndexFunction.Arn
+
+  IngestionTriggerLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: asklore-ingestion-trigger
+      Description: "Triggers a Bedrock Knowledge Base ingestion job when a new document lands in asklore-raw"
+      Runtime: python3.12
+      Handler: handler.handler
+      Code: build/ingestion-trigger
+      Role: !GetAtt IngestionTriggerLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          KNOWLEDGE_BASE_ID: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
+          DATA_SOURCE_ID: !GetAtt AskLoreDataSource.DataSourceId
+
+  IngestionTriggerLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${IngestionTriggerLambda}"
+      RetentionInDays: 30
 
   RetrievalLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: asklore-retrieval
-      Description: "Step 1.6: embed query, kNN search OpenSearch top-5, generate answer via Bedrock Claude"
+      Description: "Step 1.6: RetrieveAndGenerate against the Knowledge Base, return a cited answer"
       Runtime: python3.12
       Handler: handler.handler
       Code: build/retrieval
@@ -200,30 +267,68 @@ Resources:
       MemorySize: 256
       Environment:
         Variables:
-          OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
-          INDEX_NAME: asklore-knowledge
-          EMBEDDING_MODEL_ID: cohere.embed-english-v3
-          GENERATION_MODEL_ID: cohere.command-r-plus-v1:0
+          KNOWLEDGE_BASE_ID: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
+          GENERATION_MODEL_ARN: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
+
+  RetrievalLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RetrievalLambda}"
+      RetentionInDays: 30
+
+  # ── Bedrock Knowledge Base ──────────────────────────────────────────────────
+
+  AskLoreKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
+    DependsOn:
+      - AossKbIndex
+    Properties:
+      Name: asklore-kb
+      RoleArn: !GetAtt KnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
+      StorageConfiguration:
+        Type: OPENSEARCH_SERVERLESS
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt AossCollection.Arn
+          VectorIndexName: asklore-kb-index
+          FieldMapping:
+            VectorField: vector
+            TextField: text
+            MetadataField: metadata
+
+  AskLoreDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      Name: asklore-raw-datasource
+      KnowledgeBaseId: !Ref AskLoreKnowledgeBase
+      DataSourceConfiguration:
+        Type: S3
+        S3Configuration:
+          # String-built, not !GetAtt RawBucket.Arn — RawBucket depends (transitively, via
+          # IngestionTriggerLambda's env vars) on this resource's DataSourceId, so a direct
+          # reference back to RawBucket would create a circular dependency.
+          BucketArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
+      VectorIngestionConfiguration:
+        ChunkingConfiguration:
+          ChunkingStrategy: FIXED_SIZE
+          FixedSizeChunkingConfiguration:
+            MaxTokens: 300
+            OverlapPercentage: 20
 
   # ── Lambda Permissions ──────────────────────────────────────────────────────
   # These must exist before the S3 buckets configure their notifications,
   # because S3 verifies it can invoke the Lambda during bucket creation.
 
-  ChunkingLambdaPermission:
+  IngestionTriggerLambdaPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt ChunkingLambda.Arn
+      FunctionName: !GetAtt IngestionTriggerLambda.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
       SourceArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
-
-  EmbeddingLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !GetAtt EmbeddingLambda.Arn
-      Action: lambda:InvokeFunction
-      Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::asklore-processed-${AWS::AccountId}-${AWS::Region}"
 
   RetrievalApiPermission:
     Type: AWS::Lambda::Permission
@@ -240,7 +345,7 @@ Resources:
   RawBucket:
     Type: AWS::S3::Bucket
     DependsOn:
-      - ChunkingLambdaPermission
+      - IngestionTriggerLambdaPermission
     Properties:
       BucketName: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration:
@@ -253,28 +358,7 @@ Resources:
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: s3:ObjectCreated:*
-            Function: !GetAtt ChunkingLambda.Arn
-
-  ProcessedBucket:
-    Type: AWS::S3::Bucket
-    DependsOn:
-      - EmbeddingLambdaPermission
-    Properties:
-      BucketName: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      NotificationConfiguration:
-        LambdaConfigurations:
-          - Event: s3:ObjectCreated:*
-            Function: !GetAtt EmbeddingLambda.Arn
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: suffix
-                    Value: chunks.json
+            Function: !GetAtt IngestionTriggerLambda.Arn
 
   EvalBucket:
     Type: AWS::S3::Bucket
@@ -334,12 +418,8 @@ Resources:
 
 Outputs:
   RawBucketName:
-    Description: "Drop source documents here — prefix becomes the domain"
+    Description: "Drop source documents here — ingested by the Knowledge Base's S3 data source"
     Value: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
-
-  ProcessedBucketName:
-    Description: "Chunked JSON output: <domain>/<doc_id>/chunks.json"
-    Value: !Sub "asklore-processed-${AWS::AccountId}-${AWS::Region}"
 
   EvalBucketName:
     Description: "Golden Q&A dataset (Phase 5)"
@@ -348,6 +428,10 @@ Outputs:
   CollectionEndpoint:
     Description: "OpenSearch Serverless HTTPS endpoint"
     Value: !GetAtt AossCollection.CollectionEndpoint
+
+  KnowledgeBaseId:
+    Description: "Bedrock Knowledge Base ID"
+    Value: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
 
   ApiUrl:
     Description: 'POST /query — body: {"query": "..."}'

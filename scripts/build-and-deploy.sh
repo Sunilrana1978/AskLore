@@ -10,6 +10,7 @@ set -euo pipefail
 
 STACK_NAME="${STACK_NAME:-asklore-stack}"
 ARTIFACTS_BUCKET="asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)"
+AOSS_ADMIN_PRINCIPAL_ARN="${AOSS_ADMIN_PRINCIPAL_ARN:-$(aws sts get-caller-identity --query Arn --output text)}"
 BUILD_DIR="build"
 
 BUILD=true
@@ -62,7 +63,8 @@ if $DEPLOY; then
         --template-file template-packaged.yaml \
         --stack-name "$STACK_NAME" \
         --capabilities CAPABILITY_NAMED_IAM \
-        --no-fail-on-empty-changeset
+        --no-fail-on-empty-changeset \
+        --parameter-overrides "AossAdminPrincipalArn=${AOSS_ADMIN_PRINCIPAL_ARN}"
 
     echo ""
     echo "==> Outputs:"
