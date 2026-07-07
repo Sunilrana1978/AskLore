@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  AskLore Phase 1 — S3 data source ingested by a Bedrock Knowledge Base
+  AskLore — S3 data source ingested by a Bedrock Knowledge Base
   (OpenSearch Serverless VECTORSEARCH storage), RetrievalLambda calling
   RetrieveAndGenerate, and API Gateway.
 
@@ -258,7 +258,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: asklore-retrieval
-      Description: "Step 1.6: RetrieveAndGenerate against the Knowledge Base, return a cited answer"
+      Description: "RetrieveAndGenerate against the Knowledge Base, return a cited answer"
       Runtime: python3.12
       Handler: handler.handler
       Code: build/retrieval
@@ -370,7 +370,7 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
-  # ── API Gateway (Step 1.7) ──────────────────────────────────────────────────
+  # ── API Gateway ─────────────────────────────────────────────────────────────
 
   AskLoreApi:
     Type: AWS::ApiGateway::RestApi
@@ -405,7 +405,7 @@ Resources:
       - QueryMethod
     Properties:
       RestApiId: !Ref AskLoreApi
-      Description: Phase 1 initial deployment
+      Description: AskLore API deployment
 
   ApiStage:
     Type: AWS::ApiGateway::Stage
