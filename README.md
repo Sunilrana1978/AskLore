@@ -76,6 +76,9 @@ lambda/
   kb-index-setup/
     handler.py                  # CFN custom resource → creates the AOSS vector/text/metadata index
     requirements.txt
+  dedup/
+    handler.py                  # S3 event → SHA-256 hash + DynamoDB dedup → copy into asklore-raw
+    requirements.txt
   ingestion-trigger/
     handler.py                  # S3 event → Bedrock StartIngestionJob
     requirements.txt
@@ -94,7 +97,7 @@ Lambda source dirs contain only `handler.py` + `requirements.txt`. Installed pac
 
 **Prerequisites:**
 - [`uv`](https://github.com/astral-sh/uv) and AWS CLI v2, with credentials configured (`aws sts get-caller-identity` succeeds)
-- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access)
+- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access). Command R+ additionally requires accepting an AWS Marketplace subscription as part of that flow — if `POST /query` returns a 500 and the `retrieval` Lambda logs show `ValidationException: ... AWS Marketplace actions ... Subscribe`, the model access request wasn't fully completed; re-check the console and retry after a few minutes.
 
 ```bash
 aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)  # one-time
@@ -126,21 +129,23 @@ bash scripts/build-and-deploy.sh --deploy   # deploy only (assumes build/ exists
 
 ## Ingest documents
 
-Upload any markdown or PDF to the raw bucket — `IngestionTriggerLambda` fires automatically and starts a Knowledge Base ingestion job:
+Upload any markdown or PDF to the **landing bucket** — `DedupLambda` fires automatically, SHA-256-hashes the content, and (if it's new) copies it into `asklore-raw` under the same key, which in turn fires `IngestionTriggerLambda` and starts a Knowledge Base ingestion job. Identical content uploaded again under a different filename gets deleted from the landing bucket instead of re-ingested:
 
 ```bash
 aws s3 cp my-runbook.md \
-  s3://asklore-raw-<account>-<region>/infra-runbooks/my-runbook.md
+  s3://asklore-raw-uploads-<account>-<region>/infra-runbooks/my-runbook.md
 ```
 
 To seed all 18 sample runbooks at once:
 
 ```bash
 aws s3 sync seed-data/infra-runbooks/ \
-  s3://asklore-raw-<account>-<region>/infra-runbooks/
+  s3://asklore-raw-uploads-<account>-<region>/infra-runbooks/
 ```
 
-Bedrock allows only one ingestion job per data source at a time — syncing many files in quick succession may log a `ConflictException` for some of them; those files are picked up on the next sync. Check job status in the Bedrock console (Knowledge Bases → `asklore-kb` → Data source → Sync history) or via `aws bedrock-agent list-ingestion-jobs`.
+(Uploading directly to `asklore-raw-<account>-<region>` still works and still triggers ingestion — it just skips the content-hash dedup check.)
+
+Bedrock allows only one ingestion job per data source at a time — syncing many files in quick succession may log a `ConflictException` for some of them; those files are picked up on the next sync. Check job status in the Bedrock console (Knowledge Bases → `asklore-kb` → Data source → Sync history) or via `aws bedrock-agent list-ingestion-jobs` (requires a reasonably current AWS CLI — v2.9 and earlier predates the `bedrock-agent` command group).
 
 ## Query the API
 
@@ -206,14 +211,26 @@ curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
 # answer should not confidently state a policy that isn't grounded in a source
 ```
 
-If `sources` comes back empty for the on-topic prompts, the ingestion job likely hasn't completed yet (`asklore-kb` sync is still running or `ConflictException`'d — see [Ingest documents](#ingest-documents)).
+If `sources` comes back empty for the on-topic prompts, the ingestion job likely hasn't completed yet (`asklore-kb` sync is still running or `ConflictException`'d — see [Ingest documents](#ingest-documents)). If `POST /query` returns `{"error": "Internal server error"}` regardless of ingestion status, check the `retrieval` Lambda's CloudWatch logs first — on a fresh account this is almost always the Cohere Command R+ Marketplace subscription prerequisite above, not a code issue.
+
+<details>
+<summary>Known first-deploy gotchas (already fixed in this repo, kept here in case a fresh AWS account hits them again)</summary>
+
+These surfaced deploying this stack for the first time; `template.yaml` and `lambda/kb-index-setup/handler.py` already contain the fixes, but they're the kind of thing that can resurface in a different account/region:
+
+- **AOSS data access policy propagation delay** — `kb-index-setup` retries `AuthorizationException`s from OpenSearch Serverless for up to ~60s, since the access policy can report `CREATE_COMPLETE` before the data plane actually honors it.
+- **Index visibility settle delay** — `kb-index-setup` waits 30s after creating the index before signaling success, since `AskLoreKnowledgeBase` can otherwise 404 with "no such index" against a just-created one.
+- **OpenSearch Serverless only supports the `faiss` k-NN engine**, not `nmslib`.
+- **Orphaned `/aws/lambda/asklore-kb-index-setup` log group after a rollback** — if a deploy fails and rolls back, retrying may hit `AWS::Logs::LogGroup ... already exists`. Check for and delete it first: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/asklore-kb-index-setup`.
+
+</details>
 
 ## Implementation phases
 
 | Phase | Goal | Status |
 |---|---|---|
 | 1 | Single-domain MVP — upload → query with citations via Bedrock Knowledge Base | 🔄 In progress |
-| 2 | Multi-domain ingestion — dedup now automatic via Knowledge Base sync | Planned |
+| 2 | Multi-domain ingestion — explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion | Planned |
 | 3 | Domain router + recency weighting + multi-turn query rewriting (hybrid search/rerank now native to `RetrieveAndGenerate`) | Planned |
 | 4 | Bedrock Guardrails, grounded prompts, groundedness scoring | Planned |
 | 5 | RAGAS evaluation suite + CI regression gate | Planned |

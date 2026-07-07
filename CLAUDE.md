@@ -33,7 +33,7 @@ Chunking, embedding, and index management are owned by the Bedrock Knowledge Bas
 **Prerequisites:**
 - [`uv`](https://github.com/astral-sh/uv) installed
 - AWS CLI configured
-- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access)
+- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access) — Command R+ additionally requires completing an AWS Marketplace subscription as part of that flow. A `ValidationException` mentioning `aws-marketplace:Subscribe` from `RetrieveAndGenerate` means this step wasn't finished, not a code or IAM-policy issue.
 
 ```bash
 # One-time: create S3 bucket for CloudFormation artifacts
@@ -57,6 +57,16 @@ aws cloudformation describe-stacks \
 ```
 
 The build script (`scripts/build-and-deploy.sh`) cleans `build/`, copies each `lambda/*/handler.py`, installs `requirements.txt` deps via `uv pip install --target`, then runs `cloudformation package` + `deploy`. **Always run the full script after editing any Lambda handler or `requirements.txt`** — the deployed code lives in `build/`, not `lambda/` directly.
+
+### Known Deploy Gotchas
+
+Surfaced on the first real deploy of this stack. The fixes already live in `template.yaml` and `lambda/kb-index-setup/handler.py` — documented here so a future session (or a deploy to a fresh account/region) doesn't re-debug them from scratch:
+
+- **AOSS data access policy propagation delay:** `AossAccessPolicy` reports `CREATE_COMPLETE` in CloudFormation as soon as the policy document is accepted, but OpenSearch Serverless's data plane takes a few seconds to actually start honoring it. `kb-index-setup` retries `AuthorizationException`s for up to ~60s (`AUTHORIZATION_PROPAGATION_MAX_ATTEMPTS` / `_BACKOFF_SECONDS`) rather than failing immediately.
+- **Index visibility settle delay:** even after the index create call succeeds, `AskLoreKnowledgeBase` (`DependsOn: AossKbIndex`) can still fail with "no such index" if it starts right away — AOSS needs a moment before the index is visible on every read path, including Bedrock's own validation. `kb-index-setup` sleeps `INDEX_SETTLE_SECONDS` (30s) after a fresh create before reporting `SUCCESS` to CloudFormation.
+- **OpenSearch Serverless only supports the `faiss` k-NN engine, not `nmslib`.** Bedrock rejects the index at `AskLoreKnowledgeBase` creation with "engine type is invalid" if the wrong one is used.
+- **A Lambda invoked synchronously by a CloudFormation custom resource can race its own explicit `AWS::Logs::LogGroup`.** `AossKbIndex` invokes `AossKbIndexFunction` during stack create; if that happens before CloudFormation creates `AossKbIndexFunctionLogGroup`, Lambda auto-creates an untracked log group on first execution, and the explicit `AWS::Logs::LogGroup` resource then fails with `AlreadyExists`. Fixed by adding `AossKbIndexFunctionLogGroup` to `AossKbIndex`'s `DependsOn`. Any new Lambda invoked synchronously during stack create/update (as opposed to triggered later by S3/API Gateway, which is safe) needs the same treatment.
+- **Rollback can leave that same log group orphaned.** On rollback, the custom resource's Lambda gets invoked once more for its `Delete` lifecycle event, and Lambda's asynchronous log delivery can recreate `/aws/lambda/asklore-kb-index-setup` right after CloudFormation deletes it. Before retrying a failed deploy: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/asklore-kb-index-setup` and delete it if present, or the retry hits the same `AlreadyExists` conflict.
 
 ## Lambda Functions
 
@@ -90,7 +100,7 @@ asklore-eval-<account>-<region>/
 - **Chunking:** Owned by the Bedrock Knowledge Base's `FIXED_SIZE` chunking strategy, not a custom heading-based Lambda. This trades the earlier heading-boundary design for far less code to maintain.
 - **Embedding model:** Cohere Embed English v3 (1024-dim), invoked internally by the Knowledge Base during data-source sync — no Lambda calls `InvokeModel` for embeddings directly anymore.
 - **Generation model:** Cohere Command R+, invoked via `RetrieveAndGenerate`'s `modelArn` — not a direct `InvokeModel` call with a custom `documents[]`/`preamble` payload. Response `citations[].retrievedReferences[]` map back to S3 URIs; sources returned are only chunks actually cited.
-- **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you.
+- **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you. Uses the `faiss` k-NN engine (OpenSearch Serverless doesn't support `nmslib`) and retries/settles through AOSS's propagation delay before reporting success — see Known Deploy Gotchas.
 - **Dedup:** Explicit content-addressed dedup — `DedupLambda` SHA-256-hashes every object landing in `asklore-raw-uploads`, conditionally writes `{file_hash, filename, domain, upload_date, s3_path}` to DynamoDB (`asklore-file-hashes`) via a conditional `PutItem`, and only copies genuinely new content into `asklore-raw` (duplicates are deleted from the landing bucket, never reaching the Knowledge Base data source). Knowledge Base data-source sync's own object-level change tracking still runs on top of this as a secondary backstop, not the primary dedup mechanism.
 - **Retrieval:** `RetrieveAndGenerate`'s built-in vector search covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
 - **Access control (Phase 6):** Still planned — would use Knowledge Base metadata filtering (via `.metadata.json` S3 sidecar files) rather than the OpenSearch-layer filter originally envisioned.
@@ -157,6 +167,7 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 - Stack name convention: `asklore-<env>` (e.g., `asklore-dev`, `asklore-prod`). Pass via `STACK_NAME` env var, never hardcode.
 - Never create or modify AWS resources manually in the console — always go through CloudFormation.
 - `DependsOn` order: Lambda Permissions → S3 Buckets (so S3 can verify invocation rights at notification registration time).
+- A Lambda invoked synchronously by a CloudFormation custom resource must `DependsOn` its own `AWS::Logs::LogGroup` — see Known Deploy Gotchas above.
 
 ### Deployment Rules
 
