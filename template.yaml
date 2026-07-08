@@ -45,7 +45,7 @@ Resources:
   KnowledgeBaseRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: AskLoreKnowledgeBaseRole
+      RoleName: !Sub "${AWS::StackName}-kb-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -73,13 +73,13 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
-                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}/*"
 
   AossKbIndexLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: AossKbIndexLambdaRole
+      RoleName: !Sub "${AWS::StackName}-aoss-kb-index-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -103,7 +103,7 @@ Resources:
   IngestionTriggerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: IngestionTriggerLambdaRole
+      RoleName: !Sub "${AWS::StackName}-ingestion-trigger-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -127,7 +127,7 @@ Resources:
   RetrievalLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: RetrievalLambdaRole
+      RoleName: !Sub "${AWS::StackName}-retrieval-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -157,7 +157,7 @@ Resources:
   DedupLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: DedupLambdaRole
+      RoleName: !Sub "${AWS::StackName}-dedup-role"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -177,12 +177,12 @@ Resources:
                   - s3:GetObject
                   - s3:DeleteObject
                 Resource:
-                  - !Sub "arn:aws:s3:::asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-raw-uploads-${AWS::AccountId}-${AWS::Region}/*"
               - Effect: Allow
                 Action:
                   - s3:PutObject
                 Resource:
-                  - !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}/*"
+                  - !Sub "arn:aws:s3:::${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}/*"
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -195,7 +195,7 @@ Resources:
   FileHashesTable:
     Type: AWS::DynamoDB::Table
     Properties:
-      TableName: asklore-file-hashes
+      TableName: !Sub "${AWS::StackName}-file-hashes"
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - AttributeName: file_hash
@@ -210,19 +210,19 @@ Resources:
   AossEncryptionPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: asklore-encryption
+      Name: !Sub "${AWS::StackName}-encryption"
       Type: encryption
-      Policy: >-
-        {"Rules":[{"ResourceType":"collection","Resource":["collection/asklore"]}],"AWSOwnedKey":true}
+      Policy: !Sub >-
+        {"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]}],"AWSOwnedKey":true}
 
   AossNetworkPolicy:
     Type: AWS::OpenSearchServerless::SecurityPolicy
     Properties:
-      Name: asklore-network
+      Name: !Sub "${AWS::StackName}-network"
       Type: network
       # AllowFromPublic is acceptable for MVP; restrict to a VPC endpoint in Phase 6.
-      Policy: >-
-        [{"Rules":[{"ResourceType":"collection","Resource":["collection/asklore"]},{"ResourceType":"dashboard","Resource":["collection/asklore"]}],"AllowFromPublic":true}]
+      Policy: !Sub >-
+        [{"Rules":[{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"]},{"ResourceType":"dashboard","Resource":["collection/${AWS::StackName}"]}],"AllowFromPublic":true}]
 
   AossCollection:
     Type: AWS::OpenSearchServerless::Collection
@@ -230,7 +230,7 @@ Resources:
       - AossEncryptionPolicy
       - AossNetworkPolicy
     Properties:
-      Name: asklore
+      Name: !Ref AWS::StackName
       Type: VECTORSEARCH
 
   # Grants Lambda/Bedrock roles index read/write access at the data layer.
@@ -244,10 +244,10 @@ Resources:
     DependsOn:
       - AossCollection
     Properties:
-      Name: asklore-access
+      Name: !Sub "${AWS::StackName}-access"
       Type: data
       Policy: !Sub >-
-        [{"Rules":[{"ResourceType":"index","Resource":["index/asklore/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/asklore"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${KnowledgeBaseRole.Arn}","${AossKbIndexLambdaRole.Arn}","${AossAdminPrincipalArn}"]}]
+        [{"Rules":[{"ResourceType":"index","Resource":["index/${AWS::StackName}/*"],"Permission":["aoss:CreateIndex","aoss:DeleteIndex","aoss:UpdateIndex","aoss:DescribeIndex","aoss:ReadDocument","aoss:WriteDocument"]},{"ResourceType":"collection","Resource":["collection/${AWS::StackName}"],"Permission":["aoss:CreateCollectionItems","aoss:DescribeCollectionItems"]}],"Principal":["${KnowledgeBaseRole.Arn}","${AossKbIndexLambdaRole.Arn}","${AossAdminPrincipalArn}"]}]
 
   # ── Lambda Functions ────────────────────────────────────────────────────────
   # Code paths are local directories; `aws cloudformation package` ZIPs and
@@ -256,7 +256,7 @@ Resources:
   AossKbIndexFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: asklore-kb-index-setup
+      FunctionName: !Sub "${AWS::StackName}-kb-index-setup"
       Description: "CloudFormation custom resource: creates the AOSS vector index the Knowledge Base reads from"
       Runtime: python3.12
       Handler: handler.handler
@@ -267,7 +267,7 @@ Resources:
       Environment:
         Variables:
           OPENSEARCH_ENDPOINT: !GetAtt AossCollection.CollectionEndpoint
-          INDEX_NAME: asklore-kb-index
+          INDEX_NAME: !Sub "${AWS::StackName}-kb-index"
 
   AossKbIndexFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -290,7 +290,7 @@ Resources:
   DedupLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: asklore-dedup
+      FunctionName: !Sub "${AWS::StackName}-dedup"
       Description: "Hashes uploaded objects, dedups against DynamoDB, copies new content into asklore-raw under its domain prefix"
       Runtime: python3.12
       Handler: handler.handler
@@ -301,7 +301,7 @@ Resources:
       Environment:
         Variables:
           FILE_HASHES_TABLE: !Ref FileHashesTable
-          CLEAN_BUCKET: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+          CLEAN_BUCKET: !Sub "${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
 
   DedupLambdaLogGroup:
     Type: AWS::Logs::LogGroup
@@ -312,7 +312,7 @@ Resources:
   IngestionTriggerLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: asklore-ingestion-trigger
+      FunctionName: !Sub "${AWS::StackName}-ingestion-trigger"
       Description: "Triggers a Bedrock Knowledge Base ingestion job when a new document lands in asklore-raw"
       Runtime: python3.12
       Handler: handler.handler
@@ -334,7 +334,7 @@ Resources:
   RetrievalLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: asklore-retrieval
+      FunctionName: !Sub "${AWS::StackName}-retrieval"
       Description: "RetrieveAndGenerate against the Knowledge Base, return a cited answer"
       Runtime: python3.12
       Handler: handler.handler
@@ -360,7 +360,7 @@ Resources:
     DependsOn:
       - AossKbIndex
     Properties:
-      Name: asklore-kb
+      Name: !Sub "${AWS::StackName}-kb"
       RoleArn: !GetAtt KnowledgeBaseRole.Arn
       KnowledgeBaseConfiguration:
         Type: VECTOR
@@ -370,7 +370,7 @@ Resources:
         Type: OPENSEARCH_SERVERLESS
         OpensearchServerlessConfiguration:
           CollectionArn: !GetAtt AossCollection.Arn
-          VectorIndexName: asklore-kb-index
+          VectorIndexName: !Sub "${AWS::StackName}-kb-index"
           FieldMapping:
             VectorField: vector
             TextField: text
@@ -379,7 +379,7 @@ Resources:
   AskLoreDataSource:
     Type: AWS::Bedrock::DataSource
     Properties:
-      Name: asklore-raw-datasource
+      Name: !Sub "${AWS::StackName}-raw-datasource"
       KnowledgeBaseId: !Ref AskLoreKnowledgeBase
       DataSourceConfiguration:
         Type: S3
@@ -387,7 +387,7 @@ Resources:
           # String-built, not !GetAtt CleanBucket.Arn — CleanBucket depends (transitively, via
           # IngestionTriggerLambda's env vars) on this resource's DataSourceId, so a direct
           # reference back to CleanBucket would create a circular dependency.
-          BucketArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
+          BucketArn: !Sub "arn:aws:s3:::${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
       VectorIngestionConfiguration:
         ChunkingConfiguration:
           ChunkingStrategy: FIXED_SIZE
@@ -405,7 +405,7 @@ Resources:
       FunctionName: !GetAtt IngestionTriggerLambda.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::asklore-raw-${AWS::AccountId}-${AWS::Region}"
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
 
   DedupLambdaPermission:
     Type: AWS::Lambda::Permission
@@ -413,7 +413,7 @@ Resources:
       FunctionName: !GetAtt DedupLambda.Arn
       Action: lambda:InvokeFunction
       Principal: s3.amazonaws.com
-      SourceArn: !Sub "arn:aws:s3:::asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+      SourceArn: !Sub "arn:aws:s3:::${AWS::StackName}-raw-uploads-${AWS::AccountId}-${AWS::Region}"
 
   RetrievalApiPermission:
     Type: AWS::Lambda::Permission
@@ -427,7 +427,7 @@ Resources:
   # Buckets are created after Lambda Permissions so S3 can verify invocation
   # rights when registering the notification configuration.
 
-  # Physical bucket name is still "asklore-raw" (predates the dedup pipeline) —
+  # Physical bucket name suffix is still "-raw" (predates the dedup pipeline) —
   # this is the KB's ingestion source, populated by DedupLambda copying deduped
   # content in from RawUploadsBucket.
   CleanBucket:
@@ -435,7 +435,7 @@ Resources:
     DependsOn:
       - IngestionTriggerLambdaPermission
     Properties:
-      BucketName: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
       VersioningConfiguration:
         Status: Enabled
       PublicAccessBlockConfiguration:
@@ -456,7 +456,7 @@ Resources:
     DependsOn:
       - DedupLambdaPermission
     Properties:
-      BucketName: !Sub "asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "${AWS::StackName}-raw-uploads-${AWS::AccountId}-${AWS::Region}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -470,7 +470,7 @@ Resources:
   EvalBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "asklore-eval-${AWS::AccountId}-${AWS::Region}"
+      BucketName: !Sub "${AWS::StackName}-eval-${AWS::AccountId}-${AWS::Region}"
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -482,7 +482,7 @@ Resources:
   AskLoreApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
-      Name: asklore-api
+      Name: !Sub "${AWS::StackName}-api"
       Description: AskLore internal knowledge query API
 
   QueryResource:
@@ -525,12 +525,12 @@ Resources:
 
 Outputs:
   CleanBucketName:
-    Description: "Ingested by the Knowledge Base's S3 data source — populated by DedupLambda copying deduped content from asklore-raw-uploads"
-    Value: !Sub "asklore-raw-${AWS::AccountId}-${AWS::Region}"
+    Description: "Ingested by the Knowledge Base's S3 data source — populated by DedupLambda copying deduped content from the raw-uploads bucket"
+    Value: !Sub "${AWS::StackName}-raw-${AWS::AccountId}-${AWS::Region}"
 
   RawUploadsBucketName:
-    Description: "Drop new source documents here — DedupLambda copies new content into asklore-raw and deletes duplicates"
-    Value: !Sub "asklore-raw-uploads-${AWS::AccountId}-${AWS::Region}"
+    Description: "Drop new source documents here — DedupLambda copies new content into the raw bucket and deletes duplicates"
+    Value: !Sub "${AWS::StackName}-raw-uploads-${AWS::AccountId}-${AWS::Region}"
 
   FileHashesTableName:
     Description: "DynamoDB table tracking ingested content hashes for dedup"
@@ -538,7 +538,7 @@ Outputs:
 
   EvalBucketName:
     Description: "Golden Q&A dataset (Phase 5)"
-    Value: !Sub "asklore-eval-${AWS::AccountId}-${AWS::Region}"
+    Value: !Sub "${AWS::StackName}-eval-${AWS::AccountId}-${AWS::Region}"
 
   CollectionEndpoint:
     Description: "OpenSearch Serverless HTTPS endpoint"

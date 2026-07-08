@@ -66,7 +66,7 @@ Surfaced on the first real deploy of this stack. The fixes already live in `temp
 - **Index visibility settle delay:** even after the index create call succeeds, `AskLoreKnowledgeBase` (`DependsOn: AossKbIndex`) can still fail with "no such index" if it starts right away — AOSS needs a moment before the index is visible on every read path, including Bedrock's own validation. `kb-index-setup` sleeps `INDEX_SETTLE_SECONDS` (30s) after a fresh create before reporting `SUCCESS` to CloudFormation.
 - **OpenSearch Serverless only supports the `faiss` k-NN engine, not `nmslib`.** Bedrock rejects the index at `AskLoreKnowledgeBase` creation with "engine type is invalid" if the wrong one is used.
 - **A Lambda invoked synchronously by a CloudFormation custom resource can race its own explicit `AWS::Logs::LogGroup`.** `AossKbIndex` invokes `AossKbIndexFunction` during stack create; if that happens before CloudFormation creates `AossKbIndexFunctionLogGroup`, Lambda auto-creates an untracked log group on first execution, and the explicit `AWS::Logs::LogGroup` resource then fails with `AlreadyExists`. Fixed by adding `AossKbIndexFunctionLogGroup` to `AossKbIndex`'s `DependsOn`. Any new Lambda invoked synchronously during stack create/update (as opposed to triggered later by S3/API Gateway, which is safe) needs the same treatment.
-- **Rollback can leave that same log group orphaned.** On rollback, the custom resource's Lambda gets invoked once more for its `Delete` lifecycle event, and Lambda's asynchronous log delivery can recreate `/aws/lambda/asklore-kb-index-setup` right after CloudFormation deletes it. Before retrying a failed deploy: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/asklore-kb-index-setup` and delete it if present, or the retry hits the same `AlreadyExists` conflict.
+- **Rollback can leave that same log group orphaned.** On rollback, the custom resource's Lambda gets invoked once more for its `Delete` lifecycle event, and Lambda's asynchronous log delivery can recreate `/aws/lambda/<stack-name>-kb-index-setup` right after CloudFormation deletes it. Before retrying a failed deploy: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/<stack-name>-kb-index-setup` (e.g. `asklore-dev-kb-index-setup` for `STACK_NAME=asklore-dev`) and delete it if present, or the retry hits the same `AlreadyExists` conflict.
 
 ## Lambda Functions
 
@@ -165,6 +165,7 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 - **IaC lives in `template.yaml` at repo root. Never CDK, SAM, or Terraform.**
 - Every Lambda function must have a matching `AWS::Logs::LogGroup` resource in the template with `RetentionInDays: 30`.
 - Stack name convention: `asklore-<env>` (e.g., `asklore-dev`, `asklore-prod`). Pass via `STACK_NAME` env var, never hardcode.
+- Every physical resource name in `template.yaml` (IAM roles, Lambda function names, the DynamoDB table, AOSS collection/policy/index names, the Bedrock Knowledge Base/Data Source, S3 buckets, the API Gateway) is derived from `!Sub "${AWS::StackName}-..."` rather than a literal `asklore-` prefix — this is what makes multiple environments (`asklore-dev`/`asklore-test`/`asklore-prod`) deployable side by side in the same account/region without name collisions. Never reintroduce a literal `asklore-` physical name; always derive it from `AWS::StackName`.
 - Never create or modify AWS resources manually in the console — always go through CloudFormation.
 - `DependsOn` order: Lambda Permissions → S3 Buckets (so S3 can verify invocation rights at notification registration time).
 - A Lambda invoked synchronously by a CloudFormation custom resource must `DependsOn` its own `AWS::Logs::LogGroup` — see Known Deploy Gotchas above.
@@ -195,6 +196,7 @@ make build-deploy   # 2. Build packages + deploy stack
 
 ### Testing Rules
 
+- Local dev env setup (clone → `uv sync` → editor interpreter → verify): see README's [Local development setup](README.md#local-development-setup). `uv sync` installs the `[dependency-groups] dev` list in `pyproject.toml` — keep that list in sync with every `lambda/*/requirements.txt` plus `pytest`/`ruff` whenever a Lambda's dependencies change, or `uv run pytest`/`uv run ruff` will drift from what's actually deployed.
 - Unit tests live in `tests/unit/<function>/test_<module>.py`.
 - Tests must not make real AWS calls — mock `boto3` clients at the boundary.
 - Run all tests: `make test` | Run a single file: `uv run pytest tests/unit/<function>/test_handler.py -v` | Run one test: `uv run pytest -k <test_name> -v`

@@ -93,6 +93,44 @@ seed-data/
 
 Lambda source dirs contain only `handler.py` + `requirements.txt`. Installed packages are generated into `build/` by `scripts/build-and-deploy.sh` and gitignored.
 
+## Local development setup
+
+Everything below sets up the repo for editing, linting, and running the unit tests on your own machine. It does **not** deploy anything to AWS — see [Deploy](#deploy) for that.
+
+**Prerequisites:**
+- [`uv`](https://github.com/astral-sh/uv) — manages the Python version, virtual env, and dependencies in one tool. Install it once per machine:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS/Linux
+  # or: irm https://astral.sh/uv/install.ps1 | iex   # Windows PowerShell
+  ```
+- Git
+
+**1. Clone the repo:**
+```bash
+git clone <this-repo-url>
+cd AskLore
+```
+
+**2. Create the virtual env and install dependencies:**
+```bash
+uv sync
+```
+This reads `pyproject.toml`'s `[dependency-groups] dev` list (pytest, ruff, and every `lambda/*/requirements.txt` package — boto3, opensearch-py, etc.) and creates a `.venv/` in the repo root with Python 3.12, pinned to `uv.lock`. You don't need a system-wide Python 3.12 install — `uv sync` downloads one if needed.
+
+**3. Point your editor at `.venv`:**
+- **VS Code:** Cmd/Ctrl+Shift+P → "Python: Select Interpreter" → choose `./.venv/bin/python`. The [Ruff extension](https://marketplace.visualstudio.com/items?itemName=charliermarsh.ruff) will then pick up this repo's `pyproject.toml` lint config automatically.
+- **PyCharm:** Settings → Project → Python Interpreter → Add Interpreter → Existing → `.venv/bin/python`.
+- **Terminal only** (no editor integration needed): prefix commands with `uv run`, e.g. `uv run pytest`, or activate the venv directly with `source .venv/bin/activate` (`.venv\Scripts\activate` on Windows).
+
+**4. Verify the setup:**
+```bash
+make lint   # uv run ruff check lambda/ scripts/
+make test   # uv run pytest tests/ -v
+```
+Both should pass on a clean clone with no AWS credentials configured — unit tests mock `boto3`/`opensearch-py` at the boundary and never make real AWS calls.
+
+Once this is working, `make build-deploy` (see [Deploy](#deploy) below) is the only additional step that touches AWS, and it requires its own separate prerequisites (AWS CLI + credentials + Bedrock model access).
+
 ## Deploy
 
 **Prerequisites:**
@@ -221,7 +259,7 @@ These surfaced deploying this stack for the first time; `template.yaml` and `lam
 - **AOSS data access policy propagation delay** — `kb-index-setup` retries `AuthorizationException`s from OpenSearch Serverless for up to ~60s, since the access policy can report `CREATE_COMPLETE` before the data plane actually honors it.
 - **Index visibility settle delay** — `kb-index-setup` waits 30s after creating the index before signaling success, since `AskLoreKnowledgeBase` can otherwise 404 with "no such index" against a just-created one.
 - **OpenSearch Serverless only supports the `faiss` k-NN engine**, not `nmslib`.
-- **Orphaned `/aws/lambda/asklore-kb-index-setup` log group after a rollback** — if a deploy fails and rolls back, retrying may hit `AWS::Logs::LogGroup ... already exists`. Check for and delete it first: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/asklore-kb-index-setup`.
+- **Orphaned `/aws/lambda/<stack-name>-kb-index-setup` log group after a rollback** — if a deploy fails and rolls back, retrying may hit `AWS::Logs::LogGroup ... already exists`. Check for and delete it first: `aws logs describe-log-groups --log-group-name-prefix /aws/lambda/<stack-name>-kb-index-setup` (e.g. `asklore-dev-kb-index-setup` for `STACK_NAME=asklore-dev`).
 
 </details>
 
