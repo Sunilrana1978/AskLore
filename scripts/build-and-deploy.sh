@@ -58,13 +58,24 @@ aws cloudformation package \
 
 # ── Deploy ─────────────────────────────────────────────────────────────────────
 if $DEPLOY; then
+    ENV_NAME="${STACK_NAME#asklore-}"
+    CONFIG_FILE="config/${ENV_NAME}.json"
+
+    PARAM_OVERRIDES=("AossAdminPrincipalArn=${AOSS_ADMIN_PRINCIPAL_ARN}")
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo "==> Using ${CONFIG_FILE}"
+        PARAM_OVERRIDES=("file://${CONFIG_FILE}" "${PARAM_OVERRIDES[@]}")
+    else
+        echo "==> No ${CONFIG_FILE} found, using template defaults"
+    fi
+
     echo "==> Deploying stack ${STACK_NAME}..."
     aws cloudformation deploy \
         --template-file template-packaged.yaml \
         --stack-name "$STACK_NAME" \
         --capabilities CAPABILITY_NAMED_IAM \
         --no-fail-on-empty-changeset \
-        --parameter-overrides "AossAdminPrincipalArn=${AOSS_ADMIN_PRINCIPAL_ARN}"
+        --parameter-overrides "${PARAM_OVERRIDES[@]}"
 
     echo ""
     echo "==> Outputs:"

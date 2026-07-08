@@ -127,6 +127,7 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 ```
 ./
 ├── docs/                        # Planning docs, ADRs, architecture decisions (create when needed)
+├── config/                      # Per-env CloudFormation parameter overrides (dev.json/test.json/prod.json)
 ├── lambda/
 │   └── <function>/
 │       ├── handler.py           # Lambda entry point only
@@ -163,8 +164,9 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 ### IaC Rules
 
 - **IaC lives in `template.yaml` at repo root. Never CDK, SAM, or Terraform.**
-- Every Lambda function must have a matching `AWS::Logs::LogGroup` resource in the template with `RetentionInDays: 30`.
+- Every Lambda function must have a matching `AWS::Logs::LogGroup` resource in the template with `RetentionInDays: !Ref LogRetentionDays` (defaults to 30, overridable per environment — see below).
 - Stack name convention: `asklore-<env>` (e.g., `asklore-dev`, `asklore-prod`). Pass via `STACK_NAME` env var, never hardcode.
+- Environment-specific CloudFormation parameter values (Bedrock model IDs, log retention, API throttling) live in `config/<env>.json`, one file per `STACK_NAME` suffix (`asklore-dev` → `config/dev.json`). `scripts/build-and-deploy.sh` derives `<env>` from `STACK_NAME` and passes the matching file via `--parameter-overrides file://config/<env>.json` automatically; falls back to the `Parameters` block's `Default:` values if no matching file exists. `AossAdminPrincipalArn` never goes in these files — it's computed dynamically from the caller identity, not a static per-env constant.
 - Every physical resource name in `template.yaml` (IAM roles, Lambda function names, the DynamoDB table, AOSS collection/policy/index names, the Bedrock Knowledge Base/Data Source, S3 buckets, the API Gateway) is derived from `!Sub "${AWS::StackName}-..."` rather than a literal `asklore-` prefix — this is what makes multiple environments (`asklore-dev`/`asklore-test`/`asklore-prod`) deployable side by side in the same account/region without name collisions. Never reintroduce a literal `asklore-` physical name; always derive it from `AWS::StackName`.
 - Never create or modify AWS resources manually in the console — always go through CloudFormation.
 - `DependsOn` order: Lambda Permissions → S3 Buckets (so S3 can verify invocation rights at notification registration time).

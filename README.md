@@ -148,6 +148,18 @@ That's it — `make build-deploy` builds the Lambda packages, packages the templ
 aws cloudformation describe-stacks --stack-name asklore-stack --query "Stacks[0].Outputs" --output table
 ```
 
+### Deploying dev / test / prod
+
+`STACK_NAME=asklore-<env>` is all it takes — every resource name in `template.yaml` is derived from the stack name, so `asklore-dev`/`asklore-test`/`asklore-prod` deploy as fully independent stacks with no collisions:
+
+```bash
+STACK_NAME=asklore-dev  make build-deploy
+STACK_NAME=asklore-test make build-deploy
+STACK_NAME=asklore-prod make build-deploy
+```
+
+Environment-specific values (Bedrock model IDs, CloudWatch log retention, API Gateway throttling) live in `config/<env>.json` — `scripts/build-and-deploy.sh` derives `<env>` from the `asklore-` suffix of `STACK_NAME` and passes the matching file as a `--parameter-overrides file://...` automatically. See `config/dev.json`, `config/test.json`, `config/prod.json` for the current values (e.g. prod keeps logs for 90 days and allows more request throughput than dev). If no matching file exists (e.g. the default `asklore-stack`), the stack falls back to the `Default:` values in `template.yaml`'s `Parameters` block.
+
 <details>
 <summary>Advanced: non-default stack, custom AOSS admin, partial build/deploy</summary>
 

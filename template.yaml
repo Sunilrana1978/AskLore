@@ -20,7 +20,13 @@ Description: >-
 #          --template-file template-packaged.yaml \
 #          --stack-name asklore-stack \
 #          --capabilities CAPABILITY_NAMED_IAM \
-#          --parameter-overrides AossAdminPrincipalArn=<your-iam-user-or-role-arn>
+#          --parameter-overrides file://config/<env>.json AossAdminPrincipalArn=<your-iam-user-or-role-arn>
+#
+#      Environment-specific values (Bedrock model IDs, log retention, API
+#      throttling) live in config/<env>.json, one file per STACK_NAME suffix
+#      (asklore-dev -> config/dev.json). scripts/build-and-deploy.sh picks
+#      this up automatically; falls back to this template's Defaults if the
+#      file doesn't exist.
 #
 #   4. View outputs (bucket names, collection endpoint, API URL):
 #        aws cloudformation describe-stacks \
@@ -37,6 +43,31 @@ Parameters:
       index, for manual debugging via the OpenSearch dashboard. Pass your own
       IAM ARN at deploy time, e.g.:
         aws cloudformation deploy ... --parameter-overrides AossAdminPrincipalArn=arn:aws:iam::<account>:user/<you>
+
+  EmbeddingModelId:
+    Type: String
+    Default: cohere.embed-english-v3
+    Description: Bedrock embedding model ID used by the Knowledge Base
+
+  GenerationModelId:
+    Type: String
+    Default: cohere.command-r-plus-v1:0
+    Description: Bedrock generation model ID used by RetrieveAndGenerate
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch Logs retention (days) for all Lambda log groups
+
+  ApiThrottlingRateLimit:
+    Type: Number
+    Default: 50
+    Description: API Gateway steady-state rate limit (requests/sec) for the v1 stage
+
+  ApiThrottlingBurstLimit:
+    Type: Number
+    Default: 100
+    Description: API Gateway burst limit (concurrent requests) for the v1 stage
 
 Resources:
 
@@ -62,7 +93,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
               - Effect: Allow
                 Action:
                   - aoss:APIAccessAll
@@ -152,7 +183,7 @@ Resources:
                 Action:
                   - bedrock:InvokeModel
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
+                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${GenerationModelId}"
 
   DedupLambdaRole:
     Type: AWS::IAM::Role
@@ -273,7 +304,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${AossKbIndexFunction}"
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
 
   # Must wait on AossKbIndexFunctionLogGroup too, not just AossAccessPolicy:
   # invoking the Lambda here before CloudFormation creates its explicit log
@@ -307,7 +338,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${DedupLambda}"
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
 
   IngestionTriggerLambda:
     Type: AWS::Lambda::Function
@@ -329,7 +360,7 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${IngestionTriggerLambda}"
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
 
   RetrievalLambda:
     Type: AWS::Lambda::Function
@@ -345,13 +376,13 @@ Resources:
       Environment:
         Variables:
           KNOWLEDGE_BASE_ID: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
-          GENERATION_MODEL_ARN: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.command-r-plus-v1:0"
+          GENERATION_MODEL_ARN: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${GenerationModelId}"
 
   RetrievalLambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${RetrievalLambda}"
-      RetentionInDays: 30
+      RetentionInDays: !Ref LogRetentionDays
 
   # ── Bedrock Knowledge Base ──────────────────────────────────────────────────
 
@@ -365,7 +396,7 @@ Resources:
       KnowledgeBaseConfiguration:
         Type: VECTOR
         VectorKnowledgeBaseConfiguration:
-          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/cohere.embed-english-v3"
+          EmbeddingModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${EmbeddingModelId}"
       StorageConfiguration:
         Type: OPENSEARCH_SERVERLESS
         OpensearchServerlessConfiguration:
@@ -520,6 +551,11 @@ Resources:
       RestApiId: !Ref AskLoreApi
       DeploymentId: !Ref ApiDeployment
       StageName: v1
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !Ref ApiThrottlingRateLimit
+          ThrottlingBurstLimit: !Ref ApiThrottlingBurstLimit
 
 # ── Outputs ─────────────────────────────────────────────────────────────────────
 

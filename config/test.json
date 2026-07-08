@@ -1,0 +1,7 @@
+[
+  "EmbeddingModelId=cohere.embed-english-v3",
+  "GenerationModelId=cohere.command-r-plus-v1:0",
+  "LogRetentionDays=30",
+  "ApiThrottlingRateLimit=50",
+  "ApiThrottlingBurstLimit=100"
+]
