@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(aws logs *)",
+      "Bash(STACK_NAME=asklore-stack bash scripts/build-and-deploy.sh --deploy)",
+      "Bash(echo \"delete exit code: $?\")",
+      "Bash(git commit -m ' *)",
+      "Bash(aws dynamodb *)",
+      "Bash(uvx --with boto3 python3 -c ' *)",
+      "Bash(curl -s -X POST https://*.execute-api.*.amazonaws.com/v1/query *)"
+    ]
+  }
+}
