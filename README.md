@@ -91,6 +91,9 @@ scripts/
   build-and-deploy.sh           # build Lambda packages with uv, package, deploy
 seed-data/
   infra-runbooks/               # 18 sample markdown runbooks (domain 1)
+ui/
+  app.py                        # Streamlit chat UI — calls POST /query
+  requirements.txt
 ```
 
 Lambda source dirs contain only `handler.py` + `requirements.txt`. Installed packages are generated into `build/` by `scripts/build-and-deploy.sh` and gitignored.
@@ -227,6 +230,17 @@ Response:
 ```
 
 `sources` in the response are all chunks Bedrock's `Retrieve` returned for the query (top-5), not filtered to only those Gemini's answer actually drew on — Gemini doesn't return Bedrock-style citations to map back to S3 URIs.
+
+## Chat UI
+
+A local Streamlit chat frontend (`ui/app.py`) is available as a friendlier alternative to `curl`-ing `POST /query` directly — sample questions in the sidebar, conversation history, and cited sources per answer.
+
+```bash
+export ASKLORE_API_URL=<ApiUrl from stack outputs>
+make ui   # uv run streamlit run ui/app.py
+```
+
+Opens at `http://localhost:8501`. `ASKLORE_API_URL` is required — without it the app loads but shows a configuration error instead of the chat UI, rather than silently pointing at nothing. (`uv sync` already installs `streamlit`, since it's in the `dev` dependency group.)
 
 ## Validate a fresh deployment
 

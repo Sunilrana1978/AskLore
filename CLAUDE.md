@@ -137,6 +137,7 @@ These rules are enforced for all code changes in this repo. Claude Code must fol
 │       └── requirements.txt     # Deps scoped to this function; no shared reqs file
 ├── scripts/                     # Operational one-off scripts (build, seed, index)
 ├── seed-data/                   # Demo documents for POC; never real customer data
+├── ui/                          # Streamlit chat frontend (app.py) over POST /query — local dev tool, not deployed by CloudFormation
 ├── tests/
 │   └── unit/
 │       └── <function>/          # Unit tests mirror lambda/ layout
