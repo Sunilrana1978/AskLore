@@ -1,4 +1,4 @@
-.PHONY: build deploy build-deploy validate lint test help
+.PHONY: build deploy build-deploy validate lint test ui help
 
 STACK_NAME ?= asklore-stack
 
@@ -10,9 +10,11 @@ help:
 	@echo "  make validate       Validate template.yaml against CloudFormation"
 	@echo "  make lint           Run ruff over all Lambda source files"
 	@echo "  make test           Run unit tests"
+	@echo "  make ui             Run the Streamlit chat UI locally"
 	@echo ""
 	@echo "Env vars:"
 	@echo "  STACK_NAME=asklore-dev  Target stack (default: asklore-stack)"
+	@echo "  ASKLORE_API_URL=...     Required by 'make ui' — the stack's ApiUrl output"
 
 build:
 	bash scripts/build-and-deploy.sh --build
@@ -27,7 +29,10 @@ validate:
 	aws cloudformation validate-template --template-body file://template.yaml
 
 lint:
-	uv run ruff check lambda/ scripts/
+	uv run ruff check lambda/ scripts/ ui/
 
 test:
 	uv run pytest tests/ -v
+
+ui:
+	uv run streamlit run ui/app.py
