@@ -5,7 +5,7 @@ requires-python = ">=3.12"
 
 [dependency-groups]
 # Local dev/test env (`uv sync`) — union of every lambda/*/requirements.txt
-# plus pytest/ruff. Lambda deployment packages are still built separately
+# plus pytest/ruff/ui. Lambda deployment packages are still built separately
 # into build/ dirs by scripts/build-and-deploy.sh, not from this group.
 dev = [
     "pytest>=7.2.0",
@@ -16,6 +16,7 @@ dev = [
     "requests-aws4auth>=1.2.0",
     "requests>=2.28.0",
     "google-genai>=1.75.0,<2.0.0",
+    "streamlit>=1.38.0",
 ]
 
 [tool.ruff]
