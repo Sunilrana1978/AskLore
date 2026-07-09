@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   AskLore — S3 data source ingested by a Bedrock Knowledge Base
   (OpenSearch Serverless VECTORSEARCH storage), RetrievalLambda calling
-  RetrieveAndGenerate, and API Gateway.
+  Bedrock Retrieve + Gemini for grounded generation, and API Gateway.
 
 # ── Deploy workflow ─────────────────────────────────────────────────────────────
 #
@@ -49,10 +49,10 @@ Parameters:
     Default: cohere.embed-english-v3
     Description: Bedrock embedding model ID used by the Knowledge Base
 
-  GenerationModelId:
+  GeminiModelId:
     Type: String
-    Default: cohere.command-r-plus-v1:0
-    Description: Bedrock generation model ID used by RetrieveAndGenerate
+    Default: gemini-2.5-flash
+    Description: Gemini model ID used for RAG generation
 
   LogRetentionDays:
     Type: Number
@@ -176,14 +176,13 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock:Retrieve
-                  - bedrock:RetrieveAndGenerate
                 Resource:
                   - !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/${AskLoreKnowledgeBase}"
               - Effect: Allow
                 Action:
-                  - bedrock:InvokeModel
+                  - secretsmanager:GetSecretValue
                 Resource:
-                  - !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${GenerationModelId}"
+                  - !Ref GeminiApiKeySecret
 
   DedupLambdaRole:
     Type: AWS::IAM::Role
@@ -235,6 +234,17 @@ Resources:
         - AttributeName: file_hash
           KeyType: HASH
 
+  # ── Secrets Manager ─────────────────────────────────────────────────────────
+  # No initial value: populate the real key post-deploy, out of band, e.g.
+  #   aws secretsmanager put-secret-value --secret-id <GeminiApiKeySecretArn output> --secret-string '<key>'
+  # Never via a CloudFormation parameter or config/<env>.json.
+
+  GeminiApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${AWS::StackName}/gemini-api-key"
+      Description: "Gemini API key for RetrievalLambda generation calls"
+
   # ── OpenSearch Serverless ───────────────────────────────────────────────────
   # Encryption and network policies must exist before the collection is created.
 
@@ -267,7 +277,7 @@ Resources:
   # Grants Lambda/Bedrock roles index read/write access at the data layer.
   # The Principal ARNs are resolved via !Sub at deploy time.
   # RetrievalLambdaRole is deliberately NOT a principal here: RetrievalLambda calls
-  # bedrock-agent-runtime:RetrieveAndGenerate, never OpenSearch directly. Adding it would
+  # bedrock-agent-runtime:Retrieve, never OpenSearch directly. Adding it would
   # also create a circular dependency (this policy -> RetrievalLambdaRole -> the KB ARN in
   # its IAM policy -> AskLoreKnowledgeBase -> AossKbIndex -> this policy).
   AossAccessPolicy:
@@ -366,7 +376,7 @@ Resources:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: !Sub "${AWS::StackName}-retrieval"
-      Description: "RetrieveAndGenerate against the Knowledge Base, return a cited answer"
+      Description: "Bedrock Retrieve against the Knowledge Base, Gemini generates the grounded answer"
       Runtime: python3.12
       Handler: handler.handler
       Code: build/retrieval
@@ -376,7 +386,8 @@ Resources:
       Environment:
         Variables:
           KNOWLEDGE_BASE_ID: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
-          GENERATION_MODEL_ARN: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${GenerationModelId}"
+          GEMINI_MODEL_ID: !Ref GeminiModelId
+          GEMINI_API_KEY_SECRET_ARN: !Ref GeminiApiKeySecret
 
   RetrievalLambdaLogGroup:
     Type: AWS::Logs::LogGroup
@@ -583,6 +594,10 @@ Outputs:
   KnowledgeBaseId:
     Description: "Bedrock Knowledge Base ID"
     Value: !GetAtt AskLoreKnowledgeBase.KnowledgeBaseId
+
+  GeminiApiKeySecretArn:
+    Description: "Populate with: aws secretsmanager put-secret-value --secret-id <this ARN> --secret-string '<key>'"
+    Value: !Ref GeminiApiKeySecret
 
   ApiUrl:
     Description: 'POST /query — body: {"query": "..."}'

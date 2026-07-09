@@ -10,7 +10,7 @@ AskLore is a greenfield internal tribal-knowledge RAG assistant built entirely o
 
 **Ingestion pipeline:** S3 upload (`asklore-raw-uploads`) → S3 Event → `DedupLambda` (SHA-256 hash, conditional `asklore-file-hashes` DynamoDB write) → new content copied into `asklore-raw` / duplicate deleted from the landing bucket → S3 Event → `IngestionTriggerLambda` → Bedrock `StartIngestionJob` → Knowledge Base data source sync (KB-managed `FIXED_SIZE` chunking + Cohere Embed v3 embedding) → OpenSearch Serverless (`asklore-kb-index`)
 
-**Query pipeline:** `POST /query` → API Gateway → `RetrievalLambda` → Bedrock `RetrieveAndGenerate` (KB vector search + Cohere Command R+ grounded generation in one call) → `{answer, sources}`
+**Query pipeline:** `POST /query` → API Gateway → `RetrievalLambda` → Bedrock `Retrieve` (KB vector search only, top-5 chunks) → Gemini `generate_content` (`gemini-2.5-flash`, grounded generation from those chunks) → `{answer, sources}`. `sources` are the retrieved chunks themselves, not filtered by which ones Gemini's answer cited — Gemini doesn't return Bedrock-style citations, so this trades some grounding precision for a much simpler integration (see Key Design Decisions).
 
 **Key AWS services:**
 
@@ -20,8 +20,10 @@ AskLore is a greenfield internal tribal-knowledge RAG assistant built entirely o
 | Document storage + trigger | S3 (`asklore-raw`) + S3 Event Notifications |
 | Ingestion orchestration | Bedrock Knowledge Base + Data Source (`asklore-kb`) |
 | Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
-| Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) via `RetrieveAndGenerate` |
+| Retrieval | Bedrock `Retrieve` — vector search only, against the Knowledge Base |
+| Generation | Gemini AI Studio (`gemini-2.5-flash`) via the `google-genai` SDK; API key in Secrets Manager |
 | Vector search | OpenSearch Serverless — VECTORSEARCH collection `asklore`, index `asklore-kb-index` |
+| Secrets | AWS Secrets Manager (`<stack>/gemini-api-key`) — created empty by CloudFormation, populated post-deploy via CLI |
 | IaC | CloudFormation (`template.yaml` at repo root) — never CDK/SAM/Terraform |
 | Observability | CloudWatch + X-Ray (Phase 6) |
 | Guardrails | Bedrock Guardrails (Phase 4) |
@@ -33,7 +35,8 @@ Chunking, embedding, and index management are owned by the Bedrock Knowledge Bas
 **Prerequisites:**
 - [`uv`](https://github.com/astral-sh/uv) installed
 - AWS CLI configured
-- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access) — Command R+ additionally requires completing an AWS Marketplace subscription as part of that flow. A `ValidationException` mentioning `aws-marketplace:Subscribe` from `RetrieveAndGenerate` means this step wasn't finished, not a code or IAM-policy issue.
+- Bedrock model access enabled for **Cohere Embed English v3** (Bedrock console → Model access → Modify model access) — used by the Knowledge Base for embeddings only; generation no longer calls Bedrock.
+- A Gemini API key from Google AI Studio, populated post-deploy into the stack's `GeminiApiKeySecret` (Secrets Manager) — see Deployment Rules below. Never put the raw key in `template.yaml`, `config/<env>.json`, or git.
 
 ```bash
 # One-time: create S3 bucket for CloudFormation artifacts
@@ -75,7 +78,7 @@ Surfaced on the first real deploy of this stack. The fixes already live in `temp
 | `kb-index-setup` | CloudFormation custom resource | Creates the AOSS vector index (`vector`/`text`/`metadata` fields) the Knowledge Base reads from — KB does not create it itself |
 | `dedup` | S3 ObjectCreated on `asklore-raw-uploads` | SHA-256-hashes content, conditionally writes to DynamoDB (`asklore-file-hashes`); new hash copies into `asklore-raw` under the same key, duplicate hash deletes from the landing bucket; `.metadata.json` sidecars pass through unhashed |
 | `ingestion-trigger` | S3 ObjectCreated on `asklore-raw` | Calls Bedrock `StartIngestionJob`; swallows `ConflictException` since only one ingestion job can run per data source at a time |
-| `retrieval` | API Gateway `POST /query` | Calls Bedrock `RetrieveAndGenerate` against the Knowledge Base; returns only sources present in the response `citations[]` |
+| `retrieval` | API Gateway `POST /query` | Calls Bedrock `Retrieve` against the Knowledge Base for top-5 chunks, then Gemini `generate_content` for the answer; returns all retrieved chunks as `sources` |
 
 ## S3 Layout
 
@@ -99,19 +102,19 @@ asklore-eval-<account>-<region>/
 - **IaC:** Raw CloudFormation YAML only (`template.yaml`). Never CDK, SAM, or Terraform.
 - **Chunking:** Owned by the Bedrock Knowledge Base's `FIXED_SIZE` chunking strategy, not a custom heading-based Lambda. This trades the earlier heading-boundary design for far less code to maintain.
 - **Embedding model:** Cohere Embed English v3 (1024-dim), invoked internally by the Knowledge Base during data-source sync — no Lambda calls `InvokeModel` for embeddings directly anymore.
-- **Generation model:** Cohere Command R+, invoked via `RetrieveAndGenerate`'s `modelArn` — not a direct `InvokeModel` call with a custom `documents[]`/`preamble` payload. Response `citations[].retrievedReferences[]` map back to S3 URIs; sources returned are only chunks actually cited.
+- **Generation model:** Gemini AI Studio (`gemini-2.5-flash`, configurable via the `GeminiModelId` CloudFormation parameter / `config/<env>.json`), invoked via the `google-genai` SDK's `generate_content`, given the Bedrock-retrieved chunks as prompt context — not Bedrock `RetrieveAndGenerate`/`InvokeModel`. Switched off Bedrock generation because retrieval and generation are decoupled in RAG architecture (the vector store doesn't care which LLM consumes retrieved context), so this didn't require re-embedding/re-indexing anything. Trade-off: Gemini doesn't return Bedrock-style `citations[]`, so `sources` in the response are simply all retrieved chunks, not filtered to only those the answer actually cited. The Gemini API key lives in Secrets Manager (`GeminiApiKeySecret`), created empty by CloudFormation and populated post-deploy via `aws secretsmanager put-secret-value` — never through a CFN parameter, so it never touches parameter history, `config/<env>.json`, or git. The `google-genai` SDK disables HTTP retries by default; `_get_gemini_client()` in `lambda/retrieval/handler.py` explicitly configures `HttpRetryOptions` to retry only on 429s, sized to fit the Lambda's 28s timeout / API Gateway's 29s hard ceiling.
 - **AOSS vector index:** Created by a CloudFormation custom resource (`kb-index-setup` Lambda) before the Knowledge Base is created — CloudFormation has no native resource type for AOSS index creation, and Bedrock Knowledge Base does not create the index for you. Uses the `faiss` k-NN engine (OpenSearch Serverless doesn't support `nmslib`) and retries/settles through AOSS's propagation delay before reporting success — see Known Deploy Gotchas.
 - **Dedup:** Explicit content-addressed dedup — `DedupLambda` SHA-256-hashes every object landing in `asklore-raw-uploads`, conditionally writes `{file_hash, filename, domain, upload_date, s3_path}` to DynamoDB (`asklore-file-hashes`) via a conditional `PutItem`, and only copies genuinely new content into `asklore-raw` (duplicates are deleted from the landing bucket, never reaching the Knowledge Base data source). Knowledge Base data-source sync's own object-level change tracking still runs on top of this as a secondary backstop, not the primary dedup mechanism.
-- **Retrieval:** `RetrieveAndGenerate`'s built-in vector search covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
+- **Retrieval:** Bedrock `Retrieve`'s built-in vector search (KB vector search only, no generation) covers what Phase 3 originally planned as custom hybrid search + Bedrock Rerank; that phase item is superseded, not custom-built.
 - **Access control (Phase 6):** Still planned — would use Knowledge Base metadata filtering (via `.metadata.json` S3 sidecar files) rather than the OpenSearch-layer filter originally envisioned.
 
 ## Implementation Phases
 
 Detailed progress tracked in `AskLore_Implementation_Plan.md`.
 
-- **Phase 1** — Foundation MVP: single domain, end-to-end query with citations via Bedrock Knowledge Base + `RetrieveAndGenerate`
+- **Phase 1** — Foundation MVP: single domain, end-to-end query via Bedrock Knowledge Base + `Retrieve` + Gemini generation (see `docs/asklore-gemini-migration-plan.md` for the switch off Bedrock `RetrieveAndGenerate`)
 - **Phase 2** — Multi-domain ingestion; explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion
-- **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by `RetrieveAndGenerate`)
+- **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by Bedrock `Retrieve`)
 - **Phase 4** — Bedrock Guardrails, grounded prompts, groundedness scoring (Claude-as-judge)
 - **Phase 5** — RAGAS evaluation suite, golden dataset, CI regression gate
 - **Phase 6** — X-Ray tracing, CloudWatch dashboards, semantic cache, rate limiting, simulated RBAC (via KB metadata filtering), cost budgets
@@ -185,6 +188,7 @@ make build-deploy   # 2. Build packages + deploy stack
 - `--no-fail-on-empty-changeset` is always passed to `cloudformation deploy` — a deploy with no changes is a success, not an error.
 - Never run `--deploy` alone after manually editing a Lambda handler — build/ will be stale. Always do `make build-deploy`.
 - To target a non-default stack: `STACK_NAME=asklore-dev make build-deploy`.
+- After deploying (or redeploying) a stack, the Gemini API key must be (re-)populated in Secrets Manager — CloudFormation only creates `GeminiApiKeySecret` empty: `aws secretsmanager put-secret-value --secret-id <GeminiApiKeySecretArn from stack outputs> --secret-string '<key>'`. A stack replacement (not update) of the secret resource would wipe this value; check stack outputs after any deploy that touches `GeminiApiKeySecret`.
 
 ### Python Code Rules
 

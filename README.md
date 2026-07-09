@@ -35,14 +35,15 @@ flowchart TB
             UQRY(["👤 User"]):::person
             APIG["⑥ API Gateway"]:::lambda
             RLMB["⑦ RetrievalLambda"]:::lambda
-            RAG["⑧ RetrieveAndGenerate"]:::bedrock
-            UQRY -->|POST /query| APIG --> RLMB --> RAG
+            RAG["⑧ Bedrock Retrieve"]:::bedrock
+            GEM["⑨ Gemini generate_content"]:::bedrock
+            UQRY -->|POST /query| APIG --> RLMB --> RAG --> GEM
         end
-        OSLS[("⑨ OpenSearch Serverless — asklore-kb-index")]:::os
-        GOUT(["⑩ Grounded Answer + citations[]"]):::output
+        OSLS[("⑩ OpenSearch Serverless — asklore-kb-index")]:::os
+        GOUT(["⑪ Grounded Answer + sources"]):::output
         RAG ==>|vector search| OSLS
         OSLS ==>|top-5 chunks| RAG
-        RAG ==> GOUT
+        GEM ==> GOUT
     end
 
     KB ==>|bulk index| OSLS
@@ -50,7 +51,7 @@ flowchart TB
 
 **Ingestion flow:** A `.md` or `.pdf` file dropped into `asklore-raw-uploads` triggers `DedupLambda`, which SHA-256-hashes the content and conditionally writes to DynamoDB (`asklore-file-hashes`) — new content is copied into `asklore-raw`, duplicates are deleted from the landing bucket. The copy into `asklore-raw` triggers `IngestionTriggerLambda`, which calls Bedrock `StartIngestionJob` on the Knowledge Base's S3 data source. The Knowledge Base owns chunking (`FIXED_SIZE`), embedding (Cohere Embed v3, 1024-dim), and indexing into OpenSearch Serverless — no custom chunking/embedding Lambda code.
 
-**Query flow:** `POST /query` → `RetrievalLambda` calls Bedrock `RetrieveAndGenerate`, which does vector search against the Knowledge Base and grounded generation with Cohere Command R+ in a single call, and returns only the chunks actually referenced in `citations[]` as `sources`.
+**Query flow:** `POST /query` → `RetrievalLambda` calls Bedrock `Retrieve` (vector search only, top-5 chunks) against the Knowledge Base, then calls Gemini (`gemini-2.5-flash`) with those chunks as context to generate the answer. `sources` in the response are the retrieved chunks themselves — not filtered by which ones Gemini's answer actually drew on, since Gemini doesn't return Bedrock-style citations.
 
 ---
 
@@ -62,7 +63,8 @@ flowchart TB
 | Document storage + event trigger | S3 (`asklore-raw`) + S3 Event Notifications |
 | Ingestion orchestration | Bedrock Knowledge Base + Data Source (`asklore-kb`) |
 | Embeddings | Bedrock Cohere Embed English v3 (`cohere.embed-english-v3`, 1024-dim) |
-| Generation | Bedrock Cohere Command R+ (`cohere.command-r-plus-v1:0`) via `RetrieveAndGenerate` |
+| Retrieval | Bedrock `Retrieve` — vector search against the Knowledge Base, top-5 chunks |
+| Generation | Gemini AI Studio (`gemini-2.5-flash`) via `google-genai`, API key in Secrets Manager |
 | Vector search | OpenSearch Serverless — VECTORSEARCH collection `asklore` |
 | Compute | Lambda (Python 3.12) |
 | API | API Gateway REST — `POST /query` |
@@ -83,7 +85,7 @@ lambda/
     handler.py                  # S3 event → Bedrock StartIngestionJob
     requirements.txt
   retrieval/
-    handler.py                  # query → RetrieveAndGenerate → cited answer
+    handler.py                  # query → Bedrock Retrieve → Gemini generate_content → answer
     requirements.txt
 scripts/
   build-and-deploy.sh           # build Lambda packages with uv, package, deploy
@@ -135,7 +137,8 @@ Once this is working, `make build-deploy` (see [Deploy](#deploy) below) is the o
 
 **Prerequisites:**
 - [`uv`](https://github.com/astral-sh/uv) and AWS CLI v2, with credentials configured (`aws sts get-caller-identity` succeeds)
-- Bedrock model access enabled for **Cohere Embed English v3** and **Cohere Command R+** (Bedrock console → Model access → Modify model access). Command R+ additionally requires accepting an AWS Marketplace subscription as part of that flow — if `POST /query` returns a 500 and the `retrieval` Lambda logs show `ValidationException: ... AWS Marketplace actions ... Subscribe`, the model access request wasn't fully completed; re-check the console and retry after a few minutes.
+- Bedrock model access enabled for **Cohere Embed English v3** (Bedrock console → Model access → Modify model access) — used by the Knowledge Base for embeddings only.
+- A Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey), for the generation step.
 
 ```bash
 aws s3 mb s3://asklore-cfn-artifacts-$(aws sts get-caller-identity --query Account --output text)  # one-time
@@ -148,6 +151,14 @@ That's it — `make build-deploy` builds the Lambda packages, packages the templ
 aws cloudformation describe-stacks --stack-name asklore-stack --query "Stacks[0].Outputs" --output table
 ```
 
+**One more step before querying:** the stack creates the `GeminiApiKeySecret` in Secrets Manager with no value — CloudFormation never handles the raw key. Populate it once per environment:
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <GeminiApiKeySecretArn from stack outputs> \
+  --secret-string '<your Gemini API key>'
+```
+If `POST /query` returns a 500 and the `retrieval` Lambda's CloudWatch logs show a Secrets Manager or Gemini auth error, this step was skipped or the key is wrong.
+
 ### Deploying dev / test / prod
 
 `STACK_NAME=asklore-<env>` is all it takes — every resource name in `template.yaml` is derived from the stack name, so `asklore-dev`/`asklore-test`/`asklore-prod` deploy as fully independent stacks with no collisions:
@@ -158,7 +169,7 @@ STACK_NAME=asklore-test make build-deploy
 STACK_NAME=asklore-prod make build-deploy
 ```
 
-Environment-specific values (Bedrock model IDs, CloudWatch log retention, API Gateway throttling) live in `config/<env>.json` — `scripts/build-and-deploy.sh` derives `<env>` from the `asklore-` suffix of `STACK_NAME` and passes the matching file as a `--parameter-overrides file://...` automatically. See `config/dev.json`, `config/test.json`, `config/prod.json` for the current values (e.g. prod keeps logs for 90 days and allows more request throughput than dev). If no matching file exists (e.g. the default `asklore-stack`), the stack falls back to the `Default:` values in `template.yaml`'s `Parameters` block.
+Environment-specific values (embedding/Gemini model IDs, CloudWatch log retention, API Gateway throttling) live in `config/<env>.json` — `scripts/build-and-deploy.sh` derives `<env>` from the `asklore-` suffix of `STACK_NAME` and passes the matching file as a `--parameter-overrides file://...` automatically. See `config/dev.json`, `config/test.json`, `config/prod.json` for the current values (e.g. prod keeps logs for 90 days and allows more request throughput than dev). If no matching file exists (e.g. the default `asklore-stack`), the stack falls back to the `Default:` values in `template.yaml`'s `Parameters` block.
 
 <details>
 <summary>Advanced: non-default stack, custom AOSS admin, partial build/deploy</summary>
@@ -215,7 +226,7 @@ Response:
 }
 ```
 
-Command R+ returns `citations[]` that reference the exact documents used — `sources` in the response contains only chunks the model actually cited, not all retrieved candidates.
+`sources` in the response are all chunks Bedrock's `Retrieve` returned for the query (top-5), not filtered to only those Gemini's answer actually drew on — Gemini doesn't return Bedrock-style citations to map back to S3 URIs.
 
 ## Validate a fresh deployment
 
@@ -261,7 +272,7 @@ curl -s -X POST "$API_URL" -H "Content-Type: application/json" \
 # answer should not confidently state a policy that isn't grounded in a source
 ```
 
-If `sources` comes back empty for the on-topic prompts, the ingestion job likely hasn't completed yet (`asklore-kb` sync is still running or `ConflictException`'d — see [Ingest documents](#ingest-documents)). If `POST /query` returns `{"error": "Internal server error"}` regardless of ingestion status, check the `retrieval` Lambda's CloudWatch logs first — on a fresh account this is almost always the Cohere Command R+ Marketplace subscription prerequisite above, not a code issue.
+If `sources` comes back empty for the on-topic prompts, the ingestion job likely hasn't completed yet (`asklore-kb` sync is still running or `ConflictException`'d — see [Ingest documents](#ingest-documents)). If `POST /query` returns `{"error": "Internal server error"}` regardless of ingestion status, check the `retrieval` Lambda's CloudWatch logs first — on a fresh account this is almost always the Gemini API key not being populated in Secrets Manager yet (see the Deploy prerequisites above), not a code issue.
 
 <details>
 <summary>Known first-deploy gotchas (already fixed in this repo, kept here in case a fresh AWS account hits them again)</summary>
@@ -281,7 +292,7 @@ These surfaced deploying this stack for the first time; `template.yaml` and `lam
 |---|---|---|
 | 1 | Single-domain MVP — upload → query with citations via Bedrock Knowledge Base | 🔄 In progress |
 | 2 | Multi-domain ingestion — explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion | Planned |
-| 3 | Domain router + recency weighting + multi-turn query rewriting (hybrid search/rerank now native to `RetrieveAndGenerate`) | Planned |
+| 3 | Domain router + recency weighting + multi-turn query rewriting (hybrid search/rerank now native to Bedrock `Retrieve`) | Planned |
 | 4 | Bedrock Guardrails, grounded prompts, groundedness scoring | Planned |
 | 5 | RAGAS evaluation suite + CI regression gate | Planned |
 | 6 | X-Ray tracing, CloudWatch dashboards, semantic cache, RBAC (via KB metadata filtering) | Planned |
