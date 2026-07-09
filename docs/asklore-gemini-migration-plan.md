@@ -21,6 +21,11 @@ because retrieval and generation are decoupled in RAG architecture: the vector s
 which LLM consumes the retrieved context, so this required no re-embedding or re-indexing of the
 OpenSearch corpus.
 
+**Why Gemini specifically:** model access issues on the AWS free-tier account (Cohere Command R+
+requires a separate AWS Marketplace subscription on top of model-access approval) made Bedrock
+generation unreliable to depend on. Gemini AI Studio was chosen as the replacement to sidestep that
+entirely — it needs only an API key, no AWS Marketplace subscription or model-access request.
+
 ## Scope
 
 **Changed:**
