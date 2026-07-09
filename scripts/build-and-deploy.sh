@@ -31,14 +31,20 @@ if $BUILD; then
         # Copy Python source files only
         cp "$lambda_src"*.py "$dest/" 2>/dev/null || true
 
-        # Install dependencies alongside the handler using uv (fast, no resolver noise)
+        # Install dependencies alongside the handler using uv (fast, no resolver noise).
+        # --python-platform/--only-binary cross-compile for Lambda's x86_64 Linux runtime
+        # regardless of the host OS/arch this script runs on (e.g. macOS arm64) — without
+        # this, packages with compiled extensions (e.g. pydantic_core, a google-genai dep)
+        # install host-platform wheels that fail to import on Lambda.
         if [[ -f "${lambda_src}requirements.txt" ]]; then
             echo "    [${name}] uv pip install..."
             uv pip install \
                 -r "${lambda_src}requirements.txt" \
                 --target "$dest" \
                 --quiet \
-                --python 3.12
+                --python 3.12 \
+                --python-platform x86_64-unknown-linux-gnu \
+                --only-binary :all:
         fi
 
         echo "    [${name}] built → ${dest}/"
@@ -64,7 +70,15 @@ if $DEPLOY; then
     PARAM_OVERRIDES=("AossAdminPrincipalArn=${AOSS_ADMIN_PRINCIPAL_ARN}")
     if [[ -f "$CONFIG_FILE" ]]; then
         echo "==> Using ${CONFIG_FILE}"
-        PARAM_OVERRIDES=("file://${CONFIG_FILE}" "${PARAM_OVERRIDES[@]}")
+        # aws cloudformation deploy's --parameter-overrides only accepts a
+        # file:// reference as the sole value, not mixed with inline
+        # Key=Value entries — so parse the JSON list here instead of
+        # passing file://$CONFIG_FILE alongside AossAdminPrincipalArn.
+        CONFIG_PARAMS=()
+        while IFS= read -r param; do
+            CONFIG_PARAMS+=("$param")
+        done < <(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))))" "$CONFIG_FILE")
+        PARAM_OVERRIDES=("${CONFIG_PARAMS[@]}" "${PARAM_OVERRIDES[@]}")
     else
         echo "==> No ${CONFIG_FILE} found, using template defaults"
     fi
