@@ -112,8 +112,8 @@ asklore-eval-<account>-<region>/
 
 Detailed progress tracked in `AskLore_Implementation_Plan.md`.
 
-- **Phase 1** — Foundation MVP: single domain, end-to-end query via Bedrock Knowledge Base + `Retrieve` + Gemini generation (see `docs/asklore-gemini-migration-plan.md` for the switch off Bedrock `RetrieveAndGenerate`)
-- **Phase 2** — Multi-domain ingestion; explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion
+- **Phase 1** — Foundation MVP (✅ done): single domain, end-to-end query via Bedrock Knowledge Base + `Retrieve` + Gemini generation (see `docs/asklore-gemini-migration-plan.md` for the switch off Bedrock `RetrieveAndGenerate`), plus a Streamlit chat UI (`ui/app.py`)
+- **Phase 2** — Multi-domain ingestion (🔄 in progress): `DedupLambda` (SHA-256 + DynamoDB) is built, unit-tested, and deployed; remaining work is seeding the other 3 domains, `.metadata.json` sidecars, and recency test-case docs
 - **Phase 3** — Domain-classification router + multi-turn query rewriting (hybrid search + rerank are now covered natively by Bedrock `Retrieve`)
 - **Phase 4** — Bedrock Guardrails, grounded prompts, groundedness scoring (Claude-as-judge)
 - **Phase 5** — RAGAS evaluation suite, golden dataset, CI regression gate

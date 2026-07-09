@@ -7,12 +7,16 @@
 > **Migration note:** Phase 1's original custom `ChunkingLambda` + `EmbeddingLambda` + manual kNN/Command R+ pipeline has been replaced by an `AWS::Bedrock::KnowledgeBase` (managed chunking, embedding, and OpenSearch indexing) plus `RetrieveAndGenerate` for the query path. Steps 1.4–1.7 below are rewritten to reflect this; several Phase 2/3 items are now provided natively by the Knowledge Base rather than requiring custom code — see the inline notes.
 >
 > **Second migration layer:** explicit content-hash dedup (SHA-256 + DynamoDB) now runs ahead of the Knowledge Base's `asklore-raw` data source, via a new `asklore-raw-uploads` landing bucket and `DedupLambda` (Step 2.3). This supersedes the "Knowledge Base sync handles dedup automatically" assumption the original Step 2.3 made — that assumption only holds for unchanged-object tracking on a fixed key, not for identical content re-uploaded under a new filename. KB data-source sync's own object-tracking still runs; it's now a secondary backstop, not the primary dedup mechanism.
+>
+> **Third migration layer:** the query path no longer calls `RetrieveAndGenerate`. `RetrievalLambda` now calls Bedrock `Retrieve` (vector search only) and hands the retrieved chunks to Gemini (`gemini-2.5-flash` via the `google-genai` SDK) for generation — see `docs/asklore-gemini-migration-plan.md`. Step 1.6 below is rewritten to match; references to Cohere Command R+ elsewhere in this doc describe the superseded design.
+>
+> **Fourth addition (beyond original scope):** a local Streamlit chat UI (`ui/app.py`, `make ui`) now sits in front of `POST /query` — sample questions, conversation history, cited sources. Not part of the original phase plan; documented in `README.md`.
 
 ---
 
 ## 0. Prerequisites
 
-- [x] AWS account with Bedrock model access enabled (Cohere Embed English v3, Cohere Command R+)
+- [x] AWS account with Bedrock model access enabled (Cohere Embed English v3 — generation moved to Gemini AI Studio, no longer Bedrock Command R+)
 - [x] AWS CLI configured with sufficient IAM permissions (S3, Lambda, OpenSearch, Bedrock, DynamoDB, CloudFormation)
 - [x] CloudFormation toolchain set up locally (raw YAML, not CDK)
 - [x] Decided: raw CloudFormation YAML (`template.yaml` at repo root)
@@ -33,7 +37,7 @@
 - [x] Provision `asklore-file-hashes` DynamoDB table (on-demand billing, PK `file_hash`)
 - [x] Create IAM role `DedupLambdaRole`
 - [x] Deploy `DedupLambda` + matching `AWS::Logs::LogGroup`
-- [ ] Deploy stack, verify resources in console
+- [x] Deploy stack, verify resources in console (`asklore-dev`, confirmed via `aws cloudformation describe-stacks` outputs)
 
 ### Step 1.2 — Seed Data (Domain 1: Infra Runbooks)
 - [x] Write/curate 20–30 realistic markdown documents (e.g., "How to rotate an SSL cert", "Restarting the payment service", "On-call escalation steps")
@@ -48,21 +52,25 @@
 - [x] `AWS::Bedrock::KnowledgeBase` with `VectorKnowledgeBaseConfiguration` (Cohere Embed English v3, 1024-dim) over the OpenSearch Serverless collection
 - [x] `AWS::Bedrock::DataSource` pointing at `asklore-raw`, `FIXED_SIZE` chunking (300 tokens, 20% overlap) — chosen over preserving the heading-based custom chunker, trading exact section boundaries for far less code to maintain
 - [x] `kb-index-setup` custom-resource Lambda creates the AOSS `vector`/`text`/`metadata` index the Knowledge Base requires before it can be created
-- [ ] Confirm an ingestion job reaches `COMPLETE` after uploading a seed doc
+- [x] Confirm an ingestion job reaches `COMPLETE` after uploading a seed doc (verified against `asklore-dev` — queries return content from ingested seed docs)
 
 ### Step 1.5 — ~~Embedding Pipeline~~ (removed — owned by the Knowledge Base)
 No longer a separate step: embedding happens internally during Knowledge Base data-source sync (Step 1.4), not via a dedicated Lambda calling `InvokeModel`.
 
-### Step 1.6 — Retrieval + Generation via RetrieveAndGenerate ✅
-- [x] `RetrievalLambda`: accept query → call `bedrock-agent-runtime:RetrieveAndGenerate` with `knowledgeBaseId` + `modelArn` (Cohere Command R+) — one call replaces the old embed-query/kNN-search/generate three-step sequence
-- [x] Return `{answer, sources: [{doc_title, source_key}]}`, built from `citations[].retrievedReferences[]`
-- [ ] Confirm end-to-end answer with citation against a deployed stack
+### Step 1.6 — Retrieval + Generation via Bedrock `Retrieve` + Gemini ✅
+Rewritten from the original `RetrieveAndGenerate` design — see the "Third migration layer" note above and `docs/asklore-gemini-migration-plan.md`.
+- [x] `RetrievalLambda`: accept query → `bedrock-agent-runtime:Retrieve` (vector search only, top-5 chunks) → Gemini `generate_content` (`gemini-2.5-flash`) with those chunks as prompt context
+- [x] Return `{answer, sources: [{doc_title, source_key}]}`, built from the retrieved chunks' S3 locations (not filtered to only what Gemini cited — Gemini doesn't return Bedrock-style citations)
+- [x] Confirm end-to-end answer with citation against a deployed stack
 
 ### Step 1.7 — Minimal API
 - [x] API Gateway REST endpoint (`POST /query`) → RetrievalLambda
-- [ ] Test via curl with 5–10 sample questions once deployed
+- [x] Test via curl with 5–10 sample questions once deployed
 
-**✅ Phase 1 Done When:** You can upload a markdown file and query it end-to-end with a cited answer.
+### Step 1.8 — Chat UI (beyond original scope)
+- [x] Streamlit chat frontend (`ui/app.py`) over `POST /query` — sample questions, conversation history, cited sources; run via `make ui`
+
+**✅ Phase 1 Done:** Deployed to `asklore-dev`; upload → ingest → cited query answer works end-to-end via both curl and the Streamlit UI.
 
 ---
 
@@ -243,4 +251,10 @@ s3://asklore-eval/
 
 ## Suggested Next Action
 
-Deploy the migrated stack (`make validate && make build-deploy`), upload a seed doc, confirm the Knowledge Base ingestion job reaches `COMPLETE`, then run the end-to-end curl test against the API to close out Steps 1.4 and 1.6. Then close out Step 2.3's manual verification: upload the same file twice (different filenames) to `asklore-raw-uploads`, confirm via CloudWatch Logs (`/aws/lambda/asklore-dedup`) that only the first copy lands in `asklore-raw` and triggers ingestion, and confirm the second is deleted from the landing bucket with a matching item in `asklore-file-hashes`. Then move on to **Phase 2, Step 2.1** — seed content for the remaining three domains.
+Phase 1 is done — `asklore-dev` is deployed, ingestion is confirmed reaching `COMPLETE`, and end-to-end cited answers work via both curl and the Streamlit UI.
+
+Phase 2 is in progress: `DedupLambda` is built, unit-tested, and deployed (Step 2.3), but only `infra-runbooks` has seed content. Next:
+1. Close out Step 2.3's manual verification: upload the same file twice (different filenames) to `asklore-raw-uploads`, confirm via CloudWatch Logs (`/aws/lambda/asklore-dev-dedup`) that only the first copy lands in `asklore-raw` and triggers ingestion, and confirm the second is deleted from the landing bucket with a matching item in `asklore-file-hashes`.
+2. **Step 2.1** — write and upload seed content for the remaining three domains (`incident-postmortems/`, `product-docs/`, `onboarding-wiki/`).
+3. **Step 2.2** — attach `.metadata.json` sidecars for the unified metadata schema.
+4. **Step 2.4** — seed conflicting/recency test-case doc pairs for Phase 3.

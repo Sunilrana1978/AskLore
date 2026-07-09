@@ -304,8 +304,8 @@ These surfaced deploying this stack for the first time; `template.yaml` and `lam
 
 | Phase | Goal | Status |
 |---|---|---|
-| 1 | Single-domain MVP — upload → query with citations via Bedrock Knowledge Base | 🔄 In progress |
-| 2 | Multi-domain ingestion — explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion | Planned |
+| 1 | Single-domain MVP — upload → query with citations via Bedrock Knowledge Base + Gemini, plus a Streamlit chat UI | ✅ Done |
+| 2 | Multi-domain ingestion — explicit SHA-256 dedup via `DedupLambda` + DynamoDB ahead of Knowledge Base ingestion | 🔄 In progress — dedup built & deployed, remaining 3 domains not yet seeded |
 | 3 | Domain router + recency weighting + multi-turn query rewriting (hybrid search/rerank now native to Bedrock `Retrieve`) | Planned |
 | 4 | Bedrock Guardrails, grounded prompts, groundedness scoring | Planned |
 | 5 | RAGAS evaluation suite + CI regression gate | Planned |
