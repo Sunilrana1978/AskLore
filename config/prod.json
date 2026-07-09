@@ -1,6 +1,6 @@
 [
   "EmbeddingModelId=cohere.embed-english-v3",
-  "GenerationModelId=cohere.command-r-plus-v1:0",
+  "GeminiModelId=gemini-2.5-flash",
   "LogRetentionDays=90",
   "ApiThrottlingRateLimit=200",
   "ApiThrottlingBurstLimit=400"
