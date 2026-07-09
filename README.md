@@ -235,6 +235,8 @@ Response:
 
 A local Streamlit chat frontend (`ui/app.py`) is available as a friendlier alternative to `curl`-ing `POST /query` directly — sample questions in the sidebar, conversation history, and cited sources per answer.
 
+![AskLore chat UI](docs/images/chat-ui-screenshot.png)
+
 ```bash
 export ASKLORE_API_URL=<ApiUrl from stack outputs>
 make ui   # uv run streamlit run ui/app.py
